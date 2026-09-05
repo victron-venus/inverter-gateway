@@ -82,6 +82,16 @@ cargo run --release
 docker compose -f docker-compose.example.yml --env-file .env up --build
 ```
 
+## Deploy script
+
+```bash
+cp .env.example .env   # gitignored secrets — fill real MQTT / portal / token
+./deploy.sh            # default SSH host: synology
+./deploy.sh other-host # optional: any SSH host with Docker
+```
+
+`deploy.sh` rsyncs the repo to `/volume1/docker/inverter-gateway` (override with `REMOTE_DIR`), copies `.env` with mode `600`, then `docker compose build && up -d`. Never commits `.env`.
+
 ## Deploy on Synology (LAN) via Cloudflare Tunnel
 
 1. **Container Manager → Project → Create**, point at the cloned repo, no
