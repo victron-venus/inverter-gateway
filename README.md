@@ -50,7 +50,7 @@ Returns `mqtt_connected` reflecting the live MQTT connection state:
 | `MQTT_CLIENT_ID` | `inverter-gateway` | MQTT client id |
 | `VICTRON_PORTAL_ID` | — | Portal id → builds `N/<portal_id>/` prefix automatically |
 | `VICTRON_TOPIC_PREFIX` | `N/<portal_id>/` | Victron topic prefix. **Replace with your real portal id.** |
-| `HTTP_BIND` | `127.0.0.1:9150` | HTTP bind. Use `0.0.0.0:8080` inside Docker containers only; host must stay `127.0.0.1:9150` |
+| `HTTP_BIND` | `127.0.0.1:8080` | App bind. Docker compose overrides to `0.0.0.0:8080` inside the container; host publish is `127.0.0.1:9150:8080` |
 | `GATEWAY_API_TOKEN` | — | Bearer token (required; set `GATEWAY_ALLOW_INSECURE=1` for local tests) |
 | `GATEWAY_ALLOW_INSECURE` | `0` | Set `1` to skip token check (local LAN only) |
 | `GATEWAY_CORS_ORIGINS` | (none) | Comma-separated allowed origins; empty = same-origin only |
@@ -103,7 +103,7 @@ cp .env.example .env   # gitignored secrets — fill real MQTT / portal / token
    * Service: `http://127.0.0.1:9150`
    * Path: leave empty
 4. **Access policy**: pin a single email (or IdP group) and require MFA.
-5. The container binds only to host loopback (`127.0.0.1:9150`);
+5. Only loopback is published on the host (`127.0.0.1:9150` → container `:8080`);
    nothing is published to the LAN beyond what the tunnel loopback already exposes.
 
 ### Docker bind address
