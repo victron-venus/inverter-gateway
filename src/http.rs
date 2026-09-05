@@ -25,13 +25,23 @@ pub fn router(state: Arc<AppState>) -> Router {
 
 type SharedState = Arc<AppState>;
 
-// ── Auth ───────────────────────────────────────────────────────────────────────
+// ── Error type ─────────────────────────────────────────────────────────────────
 
-struct AuthError;
+enum AppError {
+    Unauthorized,
+    NotFound(String),
+    BadRequest(String),
+}
 
-impl IntoResponse for AuthError {
+impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (StatusCode::UNAUTHORIZED, "Invalid or missing bearer token").into_response()
+        match self {
+            AppError::Unauthorized => {
+                (StatusCode::UNAUTHORIZED, "Invalid or missing bearer token").into_response()
+            }
+            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg).into_response(),
+            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
+        }
     }
 }
 
@@ -68,8 +78,8 @@ struct HealthResponse {
 async fn snapshot(
     State(state): State<SharedState>,
     headers: HeaderMap,
-) -> Result<Json<Snapshot>, Response> {
-    require_auth(&state, &headers).map_err(|_| AuthError.into_response())?;
+) -> Result<Json<Snapshot>, AppError> {
+    require_auth(&state, &headers).map_err(|_| AppError::Unauthorized)?;
     Ok(Json(state.snapshot()))
 }
 
@@ -100,10 +110,10 @@ async fn command_get(
     State(_state): State<SharedState>,
     Path(name): Path<String>,
     headers: HeaderMap,
-) -> Result<Json<CommandInfo>, Response> {
-    require_auth(&_state, &headers).map_err(|_| AuthError.into_response())?;
+) -> Result<Json<CommandInfo>, AppError> {
+    require_auth(&_state, &headers).map_err(|_| AppError::Unauthorized)?;
     if !whitelist::is_known(&name) {
-        return Err((StatusCode::NOT_FOUND, format!("unknown command: {name}")).into_response());
+        return Err(AppError::NotFound(format!("unknown command: {name}")));
     }
     Ok(Json(CommandInfo { name }))
 }
@@ -113,15 +123,15 @@ async fn command_post(
     Path(name): Path<String>,
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
-) -> Result<Json<CommandResult>, Response> {
-    require_auth(&state, &headers).map_err(|_| AuthError.into_response())?;
+) -> Result<Json<CommandResult>, AppError> {
+    require_auth(&state, &headers).map_err(|_| AppError::Unauthorized)?;
     debug!(cmd = %name, "command POST");
     match whitelist::execute(&state, &name, body).await {
         Ok(()) => Ok(Json(CommandResult {
             ok: true,
             message: None,
         })),
-        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string()).into_response()),
+        Err(e) => Err(AppError::BadRequest(e.to_string())),
     }
 }
 
