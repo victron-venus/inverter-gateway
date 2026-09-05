@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for inverter-gateway
 # Stage 1: build
-FROM rust:1.83-alpine AS builder
+FROM rust:1.88-alpine AS builder
 RUN apk add --no-cache musl-dev
 WORKDIR /app
 
@@ -11,7 +11,7 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs && \
     rm -rf src
 
 COPY . .
-RUN cargo build --release
+RUN touch src/main.rs && cargo build --release
 
 # Stage 2: minimal runtime
 FROM alpine:3.20

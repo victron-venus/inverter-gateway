@@ -73,7 +73,8 @@ rsync -az --delete \
 ssh "$SSH_HOST" "cd '$REMOTE_DIR' && if [ ! -f docker-compose.yml ] && [ -f docker-compose.example.yml ]; then cp docker-compose.example.yml docker-compose.yml; fi"
 
 echo ">>> Installing secrets as remote .env (mode 600)..."
-scp -o BatchMode=yes "$ENV_FILE" "$SSH_HOST:$REMOTE_DIR/.env"
+# Prefer rsync: Synology SSH often rejects scp's SFTP subsystem ("subsystem request failed").
+rsync -az -e "ssh -o BatchMode=yes" "$ENV_FILE" "$SSH_HOST:$REMOTE_DIR/.env"
 ssh "$SSH_HOST" "chmod 600 '$REMOTE_DIR/.env'"
 
 echo ">>> Building and starting containers..."
@@ -83,13 +84,22 @@ set -euo pipefail
 export PATH="/usr/local/bin:/var/packages/ContainerManager/target/usr/bin:\$PATH"
 cd '$REMOTE_DIR'
 if ! command -v docker >/dev/null 2>&1; then
-  echo "ERROR: docker not found on $SSH_HOST (expected Container Manager)." >&2
+  echo "ERROR: docker not found on remote (expected Container Manager)." >&2
   exit 1
 fi
-if docker compose version >/dev/null 2>&1; then
-  COMPOSE=(docker compose)
-elif command -v docker-compose >/dev/null 2>&1; then
-  COMPOSE=(docker-compose)
+# Synology: docker.sock is root:root; administrators can use passwordless sudo.
+if sudo -n docker info >/dev/null 2>&1; then
+  DOCKER=(sudo -n docker)
+elif docker info >/dev/null 2>&1; then
+  DOCKER=(docker)
+else
+  echo "ERROR: cannot talk to docker daemon (try sudo or docker group)." >&2
+  exit 1
+fi
+if "\${DOCKER[@]}" compose version >/dev/null 2>&1; then
+  COMPOSE=("\${DOCKER[@]}" compose)
+elif command -v docker-compose >/dev/null 2>&1 && sudo -n docker-compose version >/dev/null 2>&1; then
+  COMPOSE=(sudo -n docker-compose)
 else
   echo "ERROR: neither 'docker compose' nor docker-compose found." >&2
   exit 1
@@ -101,8 +111,8 @@ echo ">>> Container status:"
 "\${COMPOSE[@]}" ps
 echo ""
 echo ">>> Health (loopback on host):"
-sleep 2
-curl -fsS http://127.0.0.1:8080/health || echo "(health not ready yet — check logs with: docker compose logs -f)"
+sleep 3
+curl -fsS http://127.0.0.1:8080/health || echo "(health not ready yet — check: sudo docker compose -f $REMOTE_DIR/docker-compose.yml logs -f)"
 REMOTE
 
 echo ""
