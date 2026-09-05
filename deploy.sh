@@ -112,7 +112,7 @@ echo ">>> Container status:"
 echo ""
 echo ">>> Health (loopback on host):"
 sleep 3
-curl -fsS http://127.0.0.1:8080/health || echo "(health not ready yet — check: sudo docker compose -f $REMOTE_DIR/docker-compose.yml logs -f)"
+curl -fsS http://127.0.0.1:9150/health || echo "(health not ready yet — check: sudo docker compose -f $REMOTE_DIR/docker-compose.yml logs -f)"
 REMOTE
 
 echo ""

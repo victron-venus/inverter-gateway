@@ -50,7 +50,7 @@ Returns `mqtt_connected` reflecting the live MQTT connection state:
 | `MQTT_CLIENT_ID` | `inverter-gateway` | MQTT client id |
 | `VICTRON_PORTAL_ID` | — | Portal id → builds `N/<portal_id>/` prefix automatically |
 | `VICTRON_TOPIC_PREFIX` | `N/<portal_id>/` | Victron topic prefix. **Replace with your real portal id.** |
-| `HTTP_BIND` | `127.0.0.1:8080` | HTTP bind. Use `0.0.0.0:8080` inside Docker containers only; host must stay `127.0.0.1:8080` |
+| `HTTP_BIND` | `127.0.0.1:9150` | HTTP bind. Use `0.0.0.0:8080` inside Docker containers only; host must stay `127.0.0.1:9150` |
 | `GATEWAY_API_TOKEN` | — | Bearer token (required; set `GATEWAY_ALLOW_INSECURE=1` for local tests) |
 | `GATEWAY_ALLOW_INSECURE` | `0` | Set `1` to skip token check (local LAN only) |
 | `GATEWAY_CORS_ORIGINS` | (none) | Comma-separated allowed origins; empty = same-origin only |
@@ -100,10 +100,10 @@ cp .env.example .env   # gitignored secrets — fill real MQTT / portal / token
    that already fronts your other services.
 3. Add a public hostname:
    * Subdomain: pick one (e.g. `gateway.example.invalid`)
-   * Service: `http://127.0.0.1:8080`
+   * Service: `http://127.0.0.1:9150`
    * Path: leave empty
 4. **Access policy**: pin a single email (or IdP group) and require MFA.
-5. The container binds only to host loopback (`127.0.0.1:8080`);
+5. The container binds only to host loopback (`127.0.0.1:9150`);
    nothing is published to the LAN beyond what the tunnel loopback already exposes.
 
 ### Docker bind address
@@ -111,7 +111,7 @@ cp .env.example .env   # gitignored secrets — fill real MQTT / portal / token
 Inside the container the process must listen on `0.0.0.0:8080` so Docker
 port-publishing works. Set `HTTP_BIND=0.0.0.0:8080` in the compose service
 environment (override), while the host-side port mapping stays loopback-only:
-`127.0.0.1:8080:8080`. Never bind `0.0.0.0` on the host.
+`127.0.0.1:9150:8080`. Never bind `0.0.0.0` on the host.
 
 The repository contains no real hostname, tunnel id, or credential. The
 deployment configuration lives in

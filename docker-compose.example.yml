@@ -13,6 +13,6 @@ services:
     ports:
       # Never expose 0.0.0.0 on the host — keep this loopback-only so
       # only a local reverse proxy (e.g. Cloudflare Tunnel) can reach it.
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9150:8080"
     # Cloudflare Tunnel on the host terminates public HTTPS and forwards
-    # to http://127.0.0.1:8080.
+    # to http://127.0.0.1:9150.
