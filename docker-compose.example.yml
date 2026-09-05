@@ -4,9 +4,12 @@ services:
     build: .
     container_name: inverter-gateway
     restart: unless-stopped
-    network_mode: host
     env_file:
       - .env
+    ports:
+      # Bind only to host loopback so the Cloudflare Tunnel on the host
+      # can reach the API. Do not change to 0.0.0.0 — that exposes the
+      # service to the LAN without authentication.
+      - "127.0.0.1:8080:8080"
     # Cloudflare Tunnel on the host (or in another container) terminates
     # public HTTPS and forwards to http://127.0.0.1:8080.
-    # No ports are published; the tunnel loopback on host is the only path.

@@ -12,13 +12,20 @@ pub struct MqttBridge {
     client: AsyncClient,
     handle: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
     shutdown_tx: broadcast::Sender<()>,
+    /// Held to keep the channel alive even if unused externally.
+    #[allow(dead_code)]
+    command_tx: tokio::sync::mpsc::UnboundedSender<crate::state::CommandRequest>,
 }
 
 impl MqttBridge {
     pub fn start(state: Arc<crate::state::AppState>, cfg: Config) -> Self {
         let (shutdown_tx, _) = broadcast::channel(1);
+        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
         let (client, eventloop) = Self::new_client(&cfg);
         let shared = state.shared.clone();
+
+        // Give the sender to Shared so whitelist::execute can enqueue commands.
+        *state.shared.command_tx.lock() = Some(command_tx.clone());
 
         let handle = tokio::spawn(Self::run_loop(
             eventloop,
@@ -26,12 +33,14 @@ impl MqttBridge {
             cfg.topic_prefix.clone(),
             shutdown_tx.subscribe(),
             client.clone(),
+            command_rx,
         ));
 
         MqttBridge {
             client,
             handle: parking_lot::Mutex::new(Some(handle)),
             shutdown_tx,
+            command_tx,
         }
     }
 
@@ -48,6 +57,7 @@ impl MqttBridge {
         topic_prefix: String,
         mut shutdown: broadcast::Receiver<()>,
         client: AsyncClient,
+        mut command_rx: tokio::sync::mpsc::UnboundedReceiver<crate::state::CommandRequest>,
     ) {
         info!("mqtt loop started");
 
@@ -77,6 +87,17 @@ impl MqttBridge {
                     info!("mqtt shutdown signal");
                     break;
                 }
+                cmd = command_rx.recv() => {
+                    if let Some((topic, payload)) = cmd {
+                        debug!(topic = %topic, "publishing command");
+                        if let Err(e) = client.publish(&topic, QoS::AtLeastOnce, false, payload.as_bytes()).await {
+                            warn!(error = %e, "command publish failed");
+                        }
+                    } else {
+                        info!("command channel closed");
+                        break;
+                    }
+                }
                 event = eventloop.poll() => {
                     match event {
                         Ok(Event::Incoming(Packet::Publish(publish))) => {
@@ -89,14 +110,20 @@ impl MqttBridge {
                         }
                         Ok(Event::Incoming(Packet::ConnAck(_))) => {
                             info!("mqtt connected");
+                            *shared.mqtt_connected.write() = true;
                         }
                         Ok(Event::Incoming(Packet::PingResp)) => {}
+                        Ok(Event::Incoming(Packet::Disconnect)) => {
+                            info!("mqtt disconnected by broker");
+                            *shared.mqtt_connected.write() = false;
+                        }
                         Ok(Event::Incoming(other)) => {
                             debug!(packet = ?other, "mqtt packet");
                         }
                         Ok(Event::Outgoing(_)) => {}
                         Err(e) => {
                             error!(error = %e, "mqtt connection error");
+                            *shared.mqtt_connected.write() = false;
                             tokio::time::sleep(Duration::from_secs(5)).await;
                         }
                     }

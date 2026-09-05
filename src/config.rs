@@ -10,9 +10,13 @@ pub struct Config {
     pub mqtt_client_id: String,
     pub http_bind: SocketAddr,
     pub api_token: Option<String>,
-    /// Victron MQTT topic prefix, e.g. "N/%instance%/"
+    /// Victron MQTT topic prefix, e.g. "N/<portal_id>/"
     /// See <https://www.victronenergy.com/services-and-support/cerbo-gx>
     pub topic_prefix: String,
+    /// Allow unauthenticated access (escape hatch for local LAN tests only).
+    pub allow_insecure: bool,
+    /// Allowed CORS origins (empty = same-origin only).
+    pub cors_origins: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -58,13 +62,31 @@ impl Config {
             env::var("MQTT_CLIENT_ID").unwrap_or_else(|_| "inverter-gateway".to_string());
 
         let http_bind: SocketAddr = env::var("HTTP_BIND")
-            .unwrap_or_else(|_| "0.0.0.0:8080".to_string())
+            .unwrap_or_else(|_| "127.0.0.1:8080".to_string())
             .parse()
             .map_err(|_| -> ConfigError { "invalid HTTP_BIND".into() })?;
 
         let api_token = env::var("GATEWAY_API_TOKEN").ok().filter(|s| !s.is_empty());
-        let topic_prefix =
-            env::var("VICTRON_TOPIC_PREFIX").unwrap_or_else(|_| "N/%instance%/".to_string());
+        let allow_insecure = env::var("GATEWAY_ALLOW_INSECURE")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+
+        // VICTRON_PORTAL_ID takes precedence; falls back to VICTRON_TOPIC_PREFIX.
+        let topic_prefix = if let Ok(portal_id) = env::var("VICTRON_PORTAL_ID") {
+            format!("N/{}/", portal_id)
+        } else {
+            env::var("VICTRON_TOPIC_PREFIX").unwrap_or_else(|_| "N/<portal_id>/".to_string())
+        };
+
+        let cors_origins = env::var("GATEWAY_CORS_ORIGINS")
+            .map(|s| {
+                s.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
 
         Ok(Config {
             mqtt_host,
@@ -75,6 +97,8 @@ impl Config {
             http_bind,
             api_token,
             topic_prefix,
+            allow_insecure,
+            cors_origins,
         })
     }
 }
@@ -89,5 +113,18 @@ mod tests {
         // We don't unset other vars because we can't be sure of the test environment.
         let _result = Config::from_env();
         // No assertion: the function should at least not panic.
+    }
+
+    #[test]
+    fn cors_origins_parses_csv() {
+        // Pure parser logic isolated for a sanity check.
+        let raw = "https://a.example, https://b.example ,, ";
+        let v: Vec<String> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        assert_eq!(v, vec!["https://a.example", "https://b.example"]);
     }
 }

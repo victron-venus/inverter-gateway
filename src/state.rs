@@ -2,7 +2,7 @@ use parking_lot::RwLock;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::config::Config;
 
@@ -30,7 +30,11 @@ pub struct SystemInfo {
 pub struct Shared {
     pub snapshot: RwLock<Snapshot>,
     pub sse_tx: broadcast::Sender<Snapshot>,
+    pub mqtt_connected: RwLock<bool>,
+    pub command_tx: parking_lot::Mutex<Option<mpsc::UnboundedSender<CommandRequest>>>,
 }
+
+pub type CommandRequest = (String, String); // (topic, payload)
 
 impl Shared {
     pub fn new() -> Arc<Self> {
@@ -38,6 +42,8 @@ impl Shared {
         Arc::new(Shared {
             snapshot: RwLock::new(Snapshot::default()),
             sse_tx,
+            mqtt_connected: RwLock::new(false),
+            command_tx: parking_lot::Mutex::new(None),
         })
     }
 
@@ -150,5 +156,11 @@ mod tests {
         let entry = snap.vebus.get("vebus/0").unwrap();
         assert_eq!(entry.get("AcPower").and_then(|v| v.as_f64()), Some(100.0));
         assert_eq!(entry.get("DcPower").and_then(|v| v.as_f64()), Some(50.0));
+    }
+
+    #[test]
+    fn mqtt_connected_starts_false() {
+        let shared = Shared::new();
+        assert!(!*shared.mqtt_connected.read());
     }
 }
