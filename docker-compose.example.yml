@@ -1,0 +1,12 @@
+services:
+  inverter-gateway:
+    image: inverter-gateway:latest
+    build: .
+    container_name: inverter-gateway
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    # Cloudflare Tunnel on the host (or in another container) terminates
+    # public HTTPS and forwards to http://127.0.0.1:8080.
+    # No ports are published; the tunnel loopback on host is the only path.
