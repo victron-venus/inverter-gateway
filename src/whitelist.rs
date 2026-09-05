@@ -27,7 +27,7 @@ pub async fn execute(state: &AppState, name: &str, _body: Value) -> Result<(), C
         .get(name)
         .ok_or_else(|| CommandError::UnknownCommand(name.to_string()))?;
 
-    let topic = format!("{}{}", state.cfg.topic_prefix, topic_suffix);
+    let topic = format!("{}{}", state.cfg.write_topic_prefix, topic_suffix);
     tracing::debug!(cmd = %name, topic = %topic, "executing command");
 
     // Publish through the MQTT client held by the bridge.

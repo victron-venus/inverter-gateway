@@ -23,8 +23,10 @@ This is the **read-mostly** layer of the project. The richer client
 * **Edge: Cloudflare Access** validates the user before traffic reaches the
   tunnel. This is the primary barrier.
 * **App: bearer token** is required by default (`GATEWAY_API_TOKEN`).
-  Set `GATEWAY_ALLOW_INSECURE=1` only as a local LAN escape hatch —
-  the server prints a loud warning on boot.
+  If `GATEWAY_API_TOKEN` is unset and `GATEWAY_ALLOW_INSECURE` is not `1`,
+  the application exits at startup with a clear error. Set
+  `GATEWAY_ALLOW_INSECURE=1` only as a local LAN escape hatch — the server
+  prints a loud warning on boot.
 * Commands are whitelist-only — no raw MQTT passthrough.
 
 ### /health
@@ -48,7 +50,7 @@ Returns `mqtt_connected` reflecting the live MQTT connection state:
 | `MQTT_CLIENT_ID` | `inverter-gateway` | MQTT client id |
 | `VICTRON_PORTAL_ID` | — | Portal id → builds `N/<portal_id>/` prefix automatically |
 | `VICTRON_TOPIC_PREFIX` | `N/<portal_id>/` | Victron topic prefix. **Replace with your real portal id.** |
-| `HTTP_BIND` | `127.0.0.1:8080` | HTTP bind — **must be loopback** |
+| `HTTP_BIND` | `127.0.0.1:8080` | HTTP bind. Use `0.0.0.0:8080` inside Docker containers only; host must stay `127.0.0.1:8080` |
 | `GATEWAY_API_TOKEN` | — | Bearer token (required; set `GATEWAY_ALLOW_INSECURE=1` for local tests) |
 | `GATEWAY_ALLOW_INSECURE` | `0` | Set `1` to skip token check (local LAN only) |
 | `GATEWAY_CORS_ORIGINS` | (none) | Comma-separated allowed origins; empty = same-origin only |
@@ -94,6 +96,13 @@ docker compose -f docker-compose.example.yml --env-file .env up --build
 5. The container binds only to host loopback (`127.0.0.1:8080`);
    nothing is published to the LAN beyond what the tunnel loopback already exposes.
 
+### Docker bind address
+
+Inside the container the process must listen on `0.0.0.0:8080` so Docker
+port-publishing works. Set `HTTP_BIND=0.0.0.0:8080` in the compose service
+environment (override), while the host-side port mapping stays loopback-only:
+`127.0.0.1:8080:8080`. Never bind `0.0.0.0` on the host.
+
 The repository contains no real hostname, tunnel id, or credential. The
 deployment configuration lives in
 `~/victron/terraform-github-victron/local.secrets.tfvars` (out of scope for
@@ -101,9 +110,13 @@ this repo).
 
 ## Whitelisted commands (v1)
 
-| Name | Topic suffix | Payload | Notes |
+| Name | Write topic | Payload | Notes |
 |---|---|---|---|
-| `silence_alarm` | `vebus/0/Alarm` | `{"SilenceAlarm":"1"}` | Acknowledge active alarm |
+| `silence_alarm` | `W/<portal_id>/vebus/0/Alarm` | `{"SilenceAlarm":"1"}` | Acknowledge active alarm |
+
+MQTT subscriptions use `N/<portal_id>/` (read). Command publications use
+`W/<portal_id>/` (write). Both are derived from `VICTRON_PORTAL_ID` or
+`VICTRON_TOPIC_PREFIX`.
 
 Adding a command: edit `src/whitelist.rs::builtin_whitelist`. Anything not
 in that table returns 404.

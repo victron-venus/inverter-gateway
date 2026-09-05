@@ -196,6 +196,7 @@ mod tests {
             http_bind: "127.0.0.1:0".parse().unwrap(),
             api_token: Some(token.to_string()),
             topic_prefix: "N/test/".into(),
+            write_topic_prefix: "W/test/".into(),
             allow_insecure: false,
             cors_origins: vec![],
         }

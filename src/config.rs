@@ -10,9 +10,12 @@ pub struct Config {
     pub mqtt_client_id: String,
     pub http_bind: SocketAddr,
     pub api_token: Option<String>,
-    /// Victron MQTT topic prefix, e.g. "N/<portal_id>/"
+    /// Victron MQTT topic prefix for reading, e.g. "N/<portal_id>/"
     /// See <https://www.victronenergy.com/services-and-support/cerbo-gx>
     pub topic_prefix: String,
+    /// Victron MQTT topic prefix for writing, e.g. "W/<portal_id>/"
+    /// Derived from topic_prefix (N/ → W/).
+    pub write_topic_prefix: String,
     /// Allow unauthenticated access (escape hatch for local LAN tests only).
     pub allow_insecure: bool,
     /// Allowed CORS origins (empty = same-origin only).
@@ -71,12 +74,20 @@ impl Config {
             .map(|v| v == "1")
             .unwrap_or(false);
 
+        // Refuse to start without a token unless the insecure escape hatch is explicitly set.
+        if api_token.is_none() && !allow_insecure {
+            return Err("GATEWAY_API_TOKEN is not set. Set it, or set GATEWAY_ALLOW_INSECURE=1 for local LAN testing only.".into());
+        }
+
         // VICTRON_PORTAL_ID takes precedence; falls back to VICTRON_TOPIC_PREFIX.
         let topic_prefix = if let Ok(portal_id) = env::var("VICTRON_PORTAL_ID") {
             format!("N/{}/", portal_id)
         } else {
             env::var("VICTRON_TOPIC_PREFIX").unwrap_or_else(|_| "N/<portal_id>/".to_string())
         };
+
+        // Write prefix: Victron requires W/ not N/ for command publications.
+        let write_topic_prefix = topic_prefix.replace("N/", "W/");
 
         let cors_origins = env::var("GATEWAY_CORS_ORIGINS")
             .map(|s| {
@@ -97,6 +108,7 @@ impl Config {
             http_bind,
             api_token,
             topic_prefix,
+            write_topic_prefix,
             allow_insecure,
             cors_origins,
         })

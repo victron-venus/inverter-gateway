@@ -6,10 +6,13 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      # Inside the container the process must listen on 0.0.0.0 so Docker
+      # port-publishing works. The host-side mapping stays loopback-only.
+      HTTP_BIND: 0.0.0.0:8080
     ports:
-      # Bind only to host loopback so the Cloudflare Tunnel on the host
-      # can reach the API. Do not change to 0.0.0.0 — that exposes the
-      # service to the LAN without authentication.
+      # Never expose 0.0.0.0 on the host — keep this loopback-only so
+      # only a local reverse proxy (e.g. Cloudflare Tunnel) can reach it.
       - "127.0.0.1:8080:8080"
-    # Cloudflare Tunnel on the host (or in another container) terminates
-    # public HTTPS and forwards to http://127.0.0.1:8080.
+    # Cloudflare Tunnel on the host terminates public HTTPS and forwards
+    # to http://127.0.0.1:8080.

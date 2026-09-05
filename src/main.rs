@@ -16,6 +16,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
 
     let cfg = Config::from_env()?;
+    if cfg.allow_insecure {
+        warn!(
+            "GATEWAY_ALLOW_INSECURE=1 is set — bearer auth is DISABLED. Do not use in production."
+        );
+    }
     info!(bind = %cfg.http_bind, mqtt = %cfg.mqtt_host, "starting inverter-gateway");
 
     let state = AppState::new(cfg.clone());
