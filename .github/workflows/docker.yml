@@ -53,3 +53,20 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Ensure package is public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Repo-linked packages can be flipped public; ignore failures (UI/org policy).
+          gh api --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            "/user/packages/container/inverter-gateway/visibility" \
+            -f visibility=public 2>/dev/null || true
+          gh api --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            "/orgs/victron-venus/packages/container/inverter-gateway/visibility" \
+            -f visibility=public 2>/dev/null || true
+          gh api orgs/victron-venus/packages/container/inverter-gateway --jq .visibility || true
+
