@@ -1,5 +1,7 @@
 /target
 /.env
+/.env.local
+/.env.secrets
 logs/
 **/*.rs.bk
 *.pdb
