@@ -105,7 +105,6 @@ pub struct ParsedUpdate {
     pub value: Value,
 }
 
-
 /// Keep only leaves the desktop mapper (and light extras) actually read.
 /// Drops the bulk of Cerbo chatter (settings, debug, unused AC phases, …).
 fn path_keep(service: &str, path: &str) -> bool {
@@ -303,11 +302,17 @@ mod tests {
     #[test]
     fn path_keep_drops_settings_and_noise() {
         assert!(!super::path_keep("settings", "0/Settings/Foo"));
-        assert!(!super::path_keep("system", "0/Debug/BatteryOperationalLimits/SolarVoltageOffset"));
+        assert!(!super::path_keep(
+            "system",
+            "0/Debug/BatteryOperationalLimits/SolarVoltageOffset"
+        ));
         assert!(super::path_keep("system", "0/Dc/Battery/Current"));
         assert!(super::path_keep("battery", "289/Dc/0/Current"));
         assert!(super::path_keep("solarcharger", "290/Yield/Power"));
-        assert!(!super::path_keep("solarcharger", "290/History/Daily/0/Yield"));
+        assert!(!super::path_keep(
+            "solarcharger",
+            "290/History/Daily/0/Yield"
+        ));
     }
 
     #[test]
@@ -331,5 +336,4 @@ mod tests {
         });
         assert!(shared.snapshot.read().settings.is_empty());
     }
-
 }
