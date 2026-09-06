@@ -5,8 +5,57 @@ Tunnel + Cloudflare Access. Subscribes to the local MQTT broker, exposes a
 curated JSON snapshot, streams changes over SSE, and accepts a whitelisted
 set of commands.
 
-This is the **read-mostly** layer of the project. The richer client
-(inverter-desktop) will gain a Remote Gateway profile in a follow-up PR.
+This is the **read-mostly** remote layer for [inverter-desktop](https://github.com/victron-venus/inverter-desktop):
+the desktop app polls `/v1/snapshot` (and can stream `/v1/events`) through
+Cloudflare Access + a bearer token, instead of talking to Cerbo MQTT on the LAN.
+
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph Clients
+    Desk["inverter-desktop<br/>Remote Gateway"]
+    Curl["curl / scripts"]
+  end
+
+  subgraph Cloudflare
+    Access["Access JWT<br/>+ Service Token"]
+    Tunnel["cloudflared tunnel<br/>victron.example"]
+  end
+
+  subgraph Synology["Synology host"]
+    GW["inverter-gateway<br/>127.0.0.1:9150"]
+    subgraph Process["gateway process"]
+      HTTP["axum HTTP<br/>/health /v1/*"]
+      Snap["Snapshot<br/>RwLock + SSE broadcast"]
+      Bridge["MQTT bridge<br/>N/&lt;portal&gt;/#"]
+      WL["Command whitelist<br/>W/&lt;portal&gt;/…"]
+    end
+    MQTT["Cerbo GX MQTT<br/>:1883"]
+  end
+
+  Desk --> Access
+  Curl --> Access
+  Access --> Tunnel
+  Tunnel -->|"http://127.0.0.1:9150"| GW
+  GW --- HTTP
+  HTTP -->|"GET snapshot / events<br/>Bearer GATEWAY_API_TOKEN"| Snap
+  HTTP -->|"POST /v1/commands/*"| WL
+  Bridge -->|"parse topics → merge"| Snap
+  Snap -->|"SSE push"| HTTP
+  Bridge <-->|"subscribe N/…<br/>publish W/…"| MQTT
+  WL -->|"publish"| Bridge
+```
+
+**Data path (read):** Cerbo publishes `N/<portal_id>/…` → MQTT bridge merges into an
+in-memory snapshot → clients `GET /v1/snapshot` or subscribe to `GET /v1/events` (SSE).
+
+**Command path (write):** `POST /v1/commands/{name}` → whitelist only → publish
+`W/<portal_id>/…` on MQTT. Unknown names return 404 (no raw passthrough).
+
+**Auth layers:** Cloudflare Access at the edge (primary), then app bearer
+`GATEWAY_API_TOKEN` (required unless `GATEWAY_ALLOW_INSECURE=1`). `/health` stays
+open for probes and reports `mqtt_connected`.
 
 ## Endpoints
 
@@ -123,6 +172,7 @@ this repo).
 | Name | Write topic | Payload | Notes |
 |---|---|---|---|
 | `silence_alarm` | `W/<portal_id>/vebus/0/Alarm` | `{"SilenceAlarm":"1"}` | Acknowledge active alarm |
+| `acknowledge_all_notifications` | `W/<portal_id>/platform/0/Notifications/AcknowledgeAll` | `{"value":1}` | Dismiss Venus GUIv2 banners (per-slot ack is often ignored) |
 
 MQTT subscriptions use `N/<portal_id>/` (read). Command publications use
 `W/<portal_id>/` (write). Both are derived from `VICTRON_PORTAL_ID` or
