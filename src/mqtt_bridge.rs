@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS};
 use tokio::sync::broadcast;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::config::Config;
 use crate::state::{ParsedUpdate, Shared};
@@ -63,6 +63,7 @@ impl MqttBridge {
 
     async fn subscribe_portal(client: &AsyncClient, prefix: &str) {
         // Match desktop: multi-level wildcards under each Victron service.
+        // No settings/+ — thousands of unused leaves; desktop never maps them.
         let filters = [
             "system/+/#",
             "vebus/+/#",
@@ -74,7 +75,6 @@ impl MqttBridge {
             "ev/+/#",
             "evcharger/+/#",
             "acload/+/#",
-            "settings/+/#",
         ];
         for filter in filters {
             let full = format!("{prefix}{filter}");
@@ -137,7 +137,7 @@ impl MqttBridge {
                             let topic = publish.topic.as_str();
                             let payload = &publish.payload;
                             if let Some(update) = Self::parse(topic, payload, &topic_prefix) {
-                                debug!(service = %update.service, path = %update.path, "mqtt update");
+                                trace!(service = %update.service, path = %update.path, "mqtt update");
                                 shared.update(update);
                             }
                         }

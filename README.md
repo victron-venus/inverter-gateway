@@ -181,6 +181,18 @@ MQTT subscriptions use `N/<portal_id>/` (read). Command publications use
 Adding a command: edit `src/whitelist.rs::builtin_whitelist`. Anything not
 in that table returns 404.
 
+
+## Performance notes
+
+Cerbo MQTT is very chatty. The gateway:
+
+* stores only leaf paths the desktop mapper needs (drops `settings/+` and other noise);
+* updates the in-memory snapshot in place;
+* **does not** clone/broadcast on every MQTT message when no SSE clients are connected;
+* coalesces SSE pushes to at most ~1/s when clients are connected.
+
+Desktop Remote Gateway polls `GET /v1/snapshot` (no SSE required).
+
 ## Development
 
 ```bash
