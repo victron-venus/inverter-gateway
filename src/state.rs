@@ -1,30 +1,38 @@
-use parking_lot::RwLock;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use parking_lot::RwLock;
+use serde_json::Value;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::config::Config;
 
+/// Aggregated Cerbo MQTT leaf values, keyed by path under each service
+/// (e.g. system["0/Dc/Battery/Soc"] = 77.5).
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Snapshot {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<SystemInfo>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub system: HashMap<String, Value>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub vebus: HashMap<String, Value>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub battery: HashMap<String, Value>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub solarcharger: HashMap<String, Value>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub pvinverter: HashMap<String, Value>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub tank: HashMap<String, Value>,
-}
-
-#[derive(Debug, Clone, Default, serde::Serialize)]
-pub struct SystemInfo {
-    pub state: Option<i32>,
-    pub state_name: Option<String>,
-    pub firmware_version: Option<String>,
-    pub product_id: Option<String>,
-    pub device_mode: Option<String>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub pump: HashMap<String, Value>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub ev: HashMap<String, Value>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub evcharger: HashMap<String, Value>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub acload: HashMap<String, Value>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub settings: HashMap<String, Value>,
 }
 
 pub struct Shared {
@@ -60,50 +68,36 @@ impl Shared {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ParsedUpdate {
     pub service: String,
-    pub values: Value,
+    pub path: String,
+    pub value: Value,
 }
 
 fn apply_update(snap: &mut Snapshot, update: ParsedUpdate) {
-    let ParsedUpdate { service, values } = update;
-    match service.as_str() {
-        "system" => {
-            let entry = snap.system.get_or_insert_with(SystemInfo::default);
-            if let Some(v) = values.get("State").and_then(|v| v.as_i64()) {
-                entry.state = Some(v as i32);
-            }
-            if let Some(v) = values.get("StateName").and_then(|v| v.as_str()) {
-                entry.state_name = Some(v.to_string());
-            }
-        }
-        s if s.starts_with("vebus/") => {
-            merge_into(&mut snap.vebus, &service, values);
-        }
-        s if s.starts_with("solarcharger/") => {
-            merge_into(&mut snap.solarcharger, &service, values);
-        }
-        s if s.starts_with("tank/") => {
-            merge_into(&mut snap.tank, &service, values);
-        }
-        _ => {}
-    }
-}
-
-fn merge_into(map: &mut HashMap<String, Value>, key: &str, values: Value) {
-    let merged = match map.remove(key) {
-        Some(existing) => {
-            let Value::Object(mut am) = existing else {
-                return;
-            };
-            if let Value::Object(bm) = values {
-                for (k, v) in bm {
-                    am.insert(k, v);
-                }
-            }
-            Value::Object(am)
-        }
-        None => values,
+    let ParsedUpdate {
+        service,
+        path,
+        value,
+    } = update;
+    let key = if path.is_empty() {
+        "_".to_string()
+    } else {
+        path
     };
-    map.insert(key.to_string(), merged);
+    let bucket = match service.as_str() {
+        "system" => &mut snap.system,
+        "vebus" => &mut snap.vebus,
+        "battery" => &mut snap.battery,
+        "solarcharger" => &mut snap.solarcharger,
+        "pvinverter" => &mut snap.pvinverter,
+        "tank" => &mut snap.tank,
+        "pump" => &mut snap.pump,
+        "ev" => &mut snap.ev,
+        "evcharger" => &mut snap.evcharger,
+        "acload" => &mut snap.acload,
+        "settings" => &mut snap.settings,
+        _ => return,
+    };
+    bucket.insert(key, value);
 }
 
 /// App state owned by the axum router.
@@ -126,41 +120,62 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
-    fn apply_update_system() {
-        let update = ParsedUpdate {
-            service: "system".to_string(),
-            values: serde_json::json!({"State": 9, "StateName": "Inverting"}),
-        };
+    fn apply_update_system_path() {
         let mut snap = Snapshot::default();
-        apply_update(&mut snap, update);
-        let sys = snap.system.unwrap();
-        assert_eq!(sys.state, Some(9));
-        assert_eq!(sys.state_name, Some("Inverting".to_string()));
+        apply_update(
+            &mut snap,
+            ParsedUpdate {
+                service: "system".into(),
+                path: "0/Dc/Battery/Soc".into(),
+                value: json!(55.0),
+            },
+        );
+        assert_eq!(snap.system.get("0/Dc/Battery/Soc"), Some(&json!(55.0)));
     }
 
     #[test]
     fn apply_update_merges_vebus() {
-        let u1 = ParsedUpdate {
-            service: "vebus/0".to_string(),
-            values: serde_json::json!({"AcPower": 100.0}),
-        };
-        let u2 = ParsedUpdate {
-            service: "vebus/0".to_string(),
-            values: serde_json::json!({"DcPower": 50.0}),
-        };
         let mut snap = Snapshot::default();
-        apply_update(&mut snap, u1);
-        apply_update(&mut snap, u2);
-        let entry = snap.vebus.get("vebus/0").unwrap();
-        assert_eq!(entry.get("AcPower").and_then(|v| v.as_f64()), Some(100.0));
-        assert_eq!(entry.get("DcPower").and_then(|v| v.as_f64()), Some(50.0));
+        apply_update(
+            &mut snap,
+            ParsedUpdate {
+                service: "vebus".into(),
+                path: "0/Ac/Out/L1/P".into(),
+                value: json!(100),
+            },
+        );
+        apply_update(
+            &mut snap,
+            ParsedUpdate {
+                service: "vebus".into(),
+                path: "0/Ac/Out/L2/P".into(),
+                value: json!(200),
+            },
+        );
+        assert_eq!(snap.vebus.len(), 2);
+        assert_eq!(snap.vebus.get("0/Ac/Out/L1/P"), Some(&json!(100)));
     }
 
     #[test]
     fn mqtt_connected_starts_false() {
         let shared = Shared::new();
         assert!(!*shared.mqtt_connected.read());
+    }
+
+    #[test]
+    fn unknown_service_ignored() {
+        let mut snap = Snapshot::default();
+        apply_update(
+            &mut snap,
+            ParsedUpdate {
+                service: "unknown".into(),
+                path: "x".into(),
+                value: json!(1),
+            },
+        );
+        assert!(snap.system.is_empty());
     }
 }

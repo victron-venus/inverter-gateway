@@ -8,6 +8,9 @@ use tracing::{debug, error, info, warn};
 use crate::config::Config;
 use crate::state::{ParsedUpdate, Shared};
 
+/// Victron GX drops N/ publishes unless clients periodically ping R/<portal>/keepalive.
+const KEEPALIVE_INTERVAL_SECS: u64 = 45;
+
 pub struct MqttBridge {
     client: AsyncClient,
     handle: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -51,6 +54,37 @@ impl MqttBridge {
         AsyncClient::new(opts, 256)
     }
 
+    fn portal_id(prefix: &str) -> Option<&str> {
+        prefix
+            .strip_prefix("N/")
+            .map(|s| s.trim_end_matches('/'))
+            .filter(|s| !s.is_empty() && !s.contains('<'))
+    }
+
+    async fn subscribe_portal(client: &AsyncClient, prefix: &str) {
+        // Match desktop: multi-level wildcards under each Victron service.
+        let filters = [
+            "system/+/#",
+            "vebus/+/#",
+            "battery/+/#",
+            "solarcharger/+/#",
+            "pvinverter/+/#",
+            "tank/+/#",
+            "pump/+/#",
+            "ev/+/#",
+            "evcharger/+/#",
+            "acload/+/#",
+            "settings/+/#",
+        ];
+        for filter in filters {
+            let full = format!("{prefix}{filter}");
+            match client.subscribe(&full, QoS::AtLeastOnce).await {
+                Ok(()) => debug!(topic = %full, "subscribed"),
+                Err(e) => warn!(topic = %full, error = %e, "subscribe failed"),
+            }
+        }
+    }
+
     async fn run_loop(
         mut eventloop: EventLoop,
         shared: Arc<Shared>,
@@ -61,31 +95,32 @@ impl MqttBridge {
     ) {
         info!("mqtt loop started");
 
-        // Subscribe to Victron services
-        let topics = [
-            "system",
-            "vebus/+",
-            "solarcharger/+",
-            "tank/+",
-            "settings/+",
-        ];
-        for topic in &topics {
-            let full = format!("{}{}", topic_prefix, topic);
-            let client = client.clone();
-            tokio::spawn(async move {
-                if let Err(e) = client.subscribe(&full, QoS::AtLeastOnce).await {
-                    warn!(topic = %full, error = %e, "subscribe failed");
-                } else {
-                    debug!(topic = %full, "subscribed");
-                }
-            });
-        }
+        let portal = Self::portal_id(&topic_prefix).map(str::to_string);
+        let keepalive_topic = portal
+            .as_ref()
+            .map(|id| format!("R/{id}/keepalive"));
+        let mut keepalive = tokio::time::interval(Duration::from_secs(KEEPALIVE_INTERVAL_SECS));
+        // Don't fire immediately before ConnAck; first tick after connect is fine.
+        keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut subscribed = false;
 
         loop {
             tokio::select! {
                 _ = shutdown.recv() => {
                     info!("mqtt shutdown signal");
                     break;
+                }
+                _ = keepalive.tick() => {
+                    if let Some(ref topic) = keepalive_topic {
+                        if let Err(e) = client
+                            .publish(topic, QoS::AtMostOnce, false, "")
+                            .await
+                        {
+                            warn!(error = %e, "keepalive publish failed");
+                        } else {
+                            debug!(topic = %topic, "keepalive sent");
+                        }
+                    }
                 }
                 cmd = command_rx.recv() => {
                     if let Some((topic, payload)) = cmd {
@@ -104,18 +139,29 @@ impl MqttBridge {
                             let topic = publish.topic.as_str();
                             let payload = &publish.payload;
                             if let Some(update) = Self::parse(topic, payload, &topic_prefix) {
-                                debug!(service = %update.service, "mqtt update");
+                                debug!(service = %update.service, path = %update.path, "mqtt update");
                                 shared.update(update);
                             }
                         }
                         Ok(Event::Incoming(Packet::ConnAck(_))) => {
                             info!("mqtt connected");
                             *shared.mqtt_connected.write() = true;
+                            if !subscribed {
+                                Self::subscribe_portal(&client, &topic_prefix).await;
+                                subscribed = true;
+                            }
+                            // Immediate keepalive so Cerbo starts dumping retained + live N/ topics.
+                            if let Some(ref topic) = keepalive_topic {
+                                let _ = client
+                                    .publish(topic, QoS::AtMostOnce, false, "")
+                                    .await;
+                            }
                         }
                         Ok(Event::Incoming(Packet::PingResp)) => {}
                         Ok(Event::Incoming(Packet::Disconnect)) => {
                             info!("mqtt disconnected by broker");
                             *shared.mqtt_connected.write() = false;
+                            subscribed = false;
                         }
                         Ok(Event::Incoming(other)) => {
                             debug!(packet = ?other, "mqtt packet");
@@ -124,6 +170,7 @@ impl MqttBridge {
                         Err(e) => {
                             error!(error = %e, "mqtt connection error");
                             *shared.mqtt_connected.write() = false;
+                            subscribed = false;
                             tokio::time::sleep(Duration::from_secs(5)).await;
                         }
                     }
@@ -134,24 +181,31 @@ impl MqttBridge {
     }
 
     /// Parse a Victron MQTT topic+payload into a ParsedUpdate.
-    /// Topics look like: "N/%instance%/system" or "N/%instance%/vebus/0/Ac/ActiveIn/L1/P"
+    /// Topics look like: `N/<portal>/system/0/Dc/Battery/Soc` with payload `{"value": 55.2}`.
     fn parse(topic: &str, payload: &[u8], prefix: &str) -> Option<ParsedUpdate> {
-        let stripped = topic.strip_prefix(prefix)?.strip_suffix('/')?;
-        let slash_pos = stripped.find('/')?;
-        let service = stripped[..slash_pos].to_string();
-        let rest = &stripped[slash_pos + 1..];
-
-        let values: serde_json::Value = serde_json::from_slice(payload).ok()?;
-        let values = match values {
-            serde_json::Value::Object(map) => serde_json::Value::Object(map),
-            other => {
-                let mut map = serde_json::Map::new();
-                map.insert(rest.to_string(), other);
-                serde_json::Value::Object(map)
-            }
+        let stripped = topic.strip_prefix(prefix)?;
+        if stripped.is_empty() {
+            return None;
+        }
+        let (service, path) = match stripped.split_once('/') {
+            Some((svc, rest)) => (svc.to_string(), rest.to_string()),
+            None => (stripped.to_string(), String::new()),
         };
+        if service.is_empty() {
+            return None;
+        }
 
-        Some(ParsedUpdate { service, values })
+        let payload_val: serde_json::Value = serde_json::from_slice(payload).ok()?;
+        let value = payload_val
+            .get("value")
+            .cloned()
+            .unwrap_or(payload_val);
+
+        Some(ParsedUpdate {
+            service,
+            path,
+            value,
+        })
     }
 
     /// Publish an MQTT message. Used by command execution.
@@ -166,10 +220,46 @@ impl MqttBridge {
     pub async fn shutdown(&self) {
         let _ = self.shutdown_tx.send(());
         let _ = self.client.disconnect().await;
-        // ponytail: take handle outside the lock before awaiting
         let handle = { self.handle.lock().take() };
         if let Some(h) = handle {
             let _ = h.await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_value_payload() {
+        let prefix = "N/abc123/";
+        let topic = "N/abc123/system/0/Dc/Battery/Soc";
+        let payload = br#"{"value": 77.5}"#;
+        let u = MqttBridge::parse(topic, payload, prefix).expect("parse");
+        assert_eq!(u.service, "system");
+        assert_eq!(u.path, "0/Dc/Battery/Soc");
+        assert_eq!(u.value, json!(77.5));
+    }
+
+    #[test]
+    fn parse_rejects_trailing_slash_requirement() {
+        // Regression: old code required topic.endswith('/') and dropped everything.
+        let prefix = "N/abc123/";
+        let topic = "N/abc123/vebus/0/Ac/Out/L1/P";
+        let payload = br#"{"value": 1200}"#;
+        assert!(MqttBridge::parse(topic, payload, prefix).is_some());
+    }
+
+    #[test]
+    fn parse_wrong_prefix() {
+        assert!(MqttBridge::parse("N/other/system/0/X", b"{\"value\":1}", "N/abc123/").is_none());
+    }
+
+    #[test]
+    fn portal_id_from_prefix() {
+        assert_eq!(MqttBridge::portal_id("N/b827ebea1ece/"), Some("b827ebea1ece"));
+        assert_eq!(MqttBridge::portal_id("N/<portal_id>/"), None);
     }
 }
