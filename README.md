@@ -140,14 +140,14 @@ cp .env.example .env   # gitignored secrets — fill real MQTT / portal / token
 ./deploy.sh
 ./deploy.sh other-host
 
-# Pull prebuilt image from GHCR (latest GitHub release, or IMAGE_TAG=…)
-# optional: GHCR_TOKEN=<PAT read:packages> for private packages
+# Pull prebuilt image from public GHCR (latest GitHub release, or IMAGE_TAG=…)
 ./deploy-from-release
 IMAGE_TAG=0.2.1 ./deploy-from-release
 ```
 
-CI publishes `linux/amd64` to `ghcr.io/victron-venus/inverter-gateway` on `v*` tags
-(`.github/workflows/docker.yml`). Shared helpers live in `deploy-common.sh`.
+CI publishes **public** `linux/amd64` images to `ghcr.io/victron-venus/inverter-gateway`
+on `v*` tags (`.github/workflows/docker.yml`). No token needed to pull. Shared helpers
+live in `deploy-common.sh`.
 
 ## Deploy on Synology (LAN) via Cloudflare Tunnel
 

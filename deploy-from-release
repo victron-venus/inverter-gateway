@@ -10,7 +10,8 @@
 # CI publishes linux/amd64 on v* tags to:
 #   ghcr.io/victron-venus/inverter-gateway
 #
-# Private GHCR: set GHCR_TOKEN (PAT with read:packages) in .env or the environment.
+# GHCR package is public — no token needed to pull.
+# Optional: GHCR_TOKEN only if the package was made private again.
 #
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
