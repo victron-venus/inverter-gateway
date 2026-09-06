@@ -135,11 +135,14 @@ docker compose -f docker-compose.example.yml --env-file .env up --build
 
 ```bash
 cp .env.example .env   # gitignored secrets — fill real MQTT / portal / token
-./deploy.sh            # default SSH host: synology
-./deploy.sh other-host # optional: any SSH host with Docker
+# optional: GHCR_TOKEN=<PAT read:packages> for private GHCR pulls
+./deploy.sh            # pull ghcr.io/victron-venus/inverter-gateway:$version
+IMAGE_TAG=0.2.1 ./deploy.sh
+BUILD_LOCAL=1 ./deploy.sh   # escape hatch: build on NAS (slow)
 ```
 
-`deploy.sh` rsyncs the repo to `/volume1/docker/inverter-gateway` (override with `REMOTE_DIR`), copies `.env` with mode `600`, then `docker compose build && up -d`. Never commits `.env`.
+CI publishes `linux/amd64` images to GHCR on `v*` tags (see `.github/workflows/docker.yml`).
+`deploy.sh` rsyncs compose + `.env`, **pulls** the image, then `up -d`. Use `BUILD_LOCAL=1` only if GHCR is unavailable.
 
 ## Deploy on Synology (LAN) via Cloudflare Tunnel
 

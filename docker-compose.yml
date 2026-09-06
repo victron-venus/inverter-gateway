@@ -1,6 +1,9 @@
 services:
   inverter-gateway:
-    image: inverter-gateway:latest
+    # Prefer prebuilt GHCR image (CI publishes on tag v*). Override with IMAGE_TAG.
+    # Local fallback: docker compose build (slow on Synology NAS).
+    image: ghcr.io/victron-venus/inverter-gateway:${IMAGE_TAG:-latest}
+    # Optional local build (BUILD_LOCAL=1 ./deploy.sh). Prefer GHCR pulls.
     build: .
     container_name: inverter-gateway
     restart: unless-stopped
