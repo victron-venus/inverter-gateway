@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+#
+# Pull a prebuilt inverter-gateway image from GHCR and start it on Synology.
+#
+# Usage:
+#   ./deploy-from-release              # latest GitHub release tag → GHCR
+#   ./deploy-from-release synology
+#   IMAGE_TAG=0.2.1 ./deploy-from-release
+#
+# CI publishes linux/amd64 on v* tags to:
+#   ghcr.io/victron-venus/inverter-gateway
+#
+# Private GHCR: set GHCR_TOKEN (PAT with read:packages) in .env or the environment.
+#
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=deploy-common.sh
+source "$SCRIPT_DIR/deploy-common.sh"
+
+deploy_common_init "${1:-synology}"
+
+resolve_image_tag() {
+  if [[ -n "${IMAGE_TAG:-}" ]]; then
+    echo "$IMAGE_TAG"
+    return
+  fi
+  if command -v gh >/dev/null 2>&1; then
+    local tag
+    tag="$(gh release view --repo victron-venus/inverter-gateway --json tagName -q .tagName 2>/dev/null || true)"
+    if [[ -n "$tag" ]]; then
+      echo "${tag#v}"
+      return
+    fi
+  fi
+  echo "latest"
+}
+
+IMAGE_TAG="$(resolve_image_tag)"
+
+echo "$SEPARATOR"
+echo "  Deploying inverter-gateway (from GHCR release)"
+echo "$SEPARATOR"
+echo "SSH host:   $SSH_HOST"
+echo "Remote dir: $REMOTE_DIR"
+echo "Env file:   $ENV_FILE"
+echo "Image:      $IMAGE_REPO:$IMAGE_TAG"
+echo ""
+
+deploy_require_env
+deploy_check_ssh
+# Compose + Dockerfile only — no Rust sources needed for pull.
+deploy_rsync 1
+deploy_install_env "$IMAGE_TAG"
+deploy_remote_up pull "$IMAGE_TAG"
+
+echo ""
+echo "$SEPARATOR"
+echo "  Deployment complete → $SSH_HOST:$REMOTE_DIR ($IMAGE_REPO:$IMAGE_TAG)"
+echo "$SEPARATOR"
+echo "Secrets stay only in local .env (gitignored) and remote $REMOTE_DIR/.env."

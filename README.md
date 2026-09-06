@@ -131,18 +131,23 @@ cargo run --release
 docker compose -f docker-compose.example.yml --env-file .env up --build
 ```
 
-## Deploy script
+## Deploy scripts
 
 ```bash
 cp .env.example .env   # gitignored secrets — fill real MQTT / portal / token
-# optional: GHCR_TOKEN=<PAT read:packages> for private GHCR pulls
-./deploy.sh            # pull ghcr.io/victron-venus/inverter-gateway:$version
-IMAGE_TAG=0.2.1 ./deploy.sh
-BUILD_LOCAL=1 ./deploy.sh   # escape hatch: build on NAS (slow)
+
+# Build Docker on the Synology (slow first time; needs Rust sources synced)
+./deploy.sh
+./deploy.sh other-host
+
+# Pull prebuilt image from GHCR (latest GitHub release, or IMAGE_TAG=…)
+# optional: GHCR_TOKEN=<PAT read:packages> for private packages
+./deploy-from-release
+IMAGE_TAG=0.2.1 ./deploy-from-release
 ```
 
-CI publishes `linux/amd64` images to GHCR on `v*` tags (see `.github/workflows/docker.yml`).
-`deploy.sh` rsyncs compose + `.env`, **pulls** the image, then `up -d`. Use `BUILD_LOCAL=1` only if GHCR is unavailable.
+CI publishes `linux/amd64` to `ghcr.io/victron-venus/inverter-gateway` on `v*` tags
+(`.github/workflows/docker.yml`). Shared helpers live in `deploy-common.sh`.
 
 ## Deploy on Synology (LAN) via Cloudflare Tunnel
 
