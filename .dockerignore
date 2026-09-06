@@ -1,0 +1,11 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+target
+*.md
+deploy.sh
+deploy-from-release
+deploy-common.sh
+docker-compose*.yml
