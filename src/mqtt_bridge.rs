@@ -96,9 +96,7 @@ impl MqttBridge {
         info!("mqtt loop started");
 
         let portal = Self::portal_id(&topic_prefix).map(str::to_string);
-        let keepalive_topic = portal
-            .as_ref()
-            .map(|id| format!("R/{id}/keepalive"));
+        let keepalive_topic = portal.as_ref().map(|id| format!("R/{id}/keepalive"));
         let mut keepalive = tokio::time::interval(Duration::from_secs(KEEPALIVE_INTERVAL_SECS));
         // Don't fire immediately before ConnAck; first tick after connect is fine.
         keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -196,10 +194,7 @@ impl MqttBridge {
         }
 
         let payload_val: serde_json::Value = serde_json::from_slice(payload).ok()?;
-        let value = payload_val
-            .get("value")
-            .cloned()
-            .unwrap_or(payload_val);
+        let value = payload_val.get("value").cloned().unwrap_or(payload_val);
 
         Some(ParsedUpdate {
             service,
@@ -259,7 +254,10 @@ mod tests {
 
     #[test]
     fn portal_id_from_prefix() {
-        assert_eq!(MqttBridge::portal_id("N/b827ebea1ece/"), Some("b827ebea1ece"));
+        assert_eq!(
+            MqttBridge::portal_id("N/b827ebea1ece/"),
+            Some("b827ebea1ece")
+        );
         assert_eq!(MqttBridge::portal_id("N/<portal_id>/"), None);
     }
 }
