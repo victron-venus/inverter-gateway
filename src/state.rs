@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::RwLock;
 use serde_json::Value;
@@ -38,6 +40,8 @@ pub struct Snapshot {
 pub struct Shared {
     pub snapshot: RwLock<Snapshot>,
     pub sse_tx: broadcast::Sender<Snapshot>,
+    /// Set when snapshot changed and at least one SSE client may need a push.
+    sse_dirty: AtomicBool,
     pub mqtt_connected: RwLock<bool>,
     pub command_tx: parking_lot::Mutex<Option<mpsc::UnboundedSender<CommandRequest>>>,
 }
@@ -50,18 +54,47 @@ impl Shared {
         Arc::new(Shared {
             snapshot: RwLock::new(Snapshot::default()),
             sse_tx,
+            sse_dirty: AtomicBool::new(false),
             mqtt_connected: RwLock::new(false),
             command_tx: parking_lot::Mutex::new(None),
         })
     }
 
+    /// Apply one MQTT leaf. Never clones the whole snapshot unless an SSE
+    /// subscriber exists — Victron floods hundreds of retained/live topics and
+    /// cloning ~100KB+ per message pegged Synology at ~60%+ CPU.
     pub fn update(&self, update: ParsedUpdate) {
+        if !path_keep(&update.service, &update.path) {
+            return;
+        }
         {
             let mut snap = self.snapshot.write();
             apply_update(&mut snap, update);
         }
-        let snap = self.snapshot.read().clone();
-        let _ = self.sse_tx.send(snap);
+        if self.sse_tx.receiver_count() == 0 {
+            return;
+        }
+        self.sse_dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Coalesce SSE broadcasts to at most once per second with the latest snapshot.
+    pub fn start_sse_coalesce(self: &Arc<Self>) {
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(1));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                if !this.sse_dirty.swap(false, Ordering::Relaxed) {
+                    continue;
+                }
+                if this.sse_tx.receiver_count() == 0 {
+                    continue;
+                }
+                let snap = this.snapshot.read().clone();
+                let _ = this.sse_tx.send(snap);
+            }
+        });
     }
 }
 
@@ -70,6 +103,94 @@ pub struct ParsedUpdate {
     pub service: String,
     pub path: String,
     pub value: Value,
+}
+
+
+/// Keep only leaves the desktop mapper (and light extras) actually read.
+/// Drops the bulk of Cerbo chatter (settings, debug, unused AC phases, …).
+fn path_keep(service: &str, path: &str) -> bool {
+    // path is everything after "<instance>/" — or empty.
+    let (_inst, leaf) = match path.split_once('/') {
+        Some((i, rest)) => (i, rest),
+        None => ("", path),
+    };
+    match service {
+        "settings" => false,
+        "system" => matches!(
+            leaf,
+            "Ac/Grid/L1/Power"
+                | "Ac/Grid/L2/Power"
+                | "Ac/Consumption/L1/Power"
+                | "Ac/Consumption/L2/Power"
+                | "Dc/Battery/Voltage"
+                | "Dc/Battery/Current"
+                | "Dc/Battery/Power"
+                | "Dc/Pv/Power"
+                | "Dc/Pv/Current"
+        ),
+        "vebus" => {
+            leaf == "State"
+                || leaf == "Hub4/L1/AcPowerSetpoint"
+                || leaf.starts_with("Ac/Out/")
+                || leaf.starts_with("Ac/ActiveIn/")
+        }
+        "battery" => matches!(
+            leaf,
+            "Soc"
+                | "Dc/0/Voltage"
+                | "Dc/0/Current"
+                | "Dc/0/Power"
+                | "ProductName"
+                | "CustomName"
+                | "Serial"
+                | "TimeToGo"
+                | "System/MaxCellVoltage"
+                | "System/MinCellVoltage"
+                | "System/MaxVoltageCellId"
+                | "System/MinVoltageCellId"
+        ),
+        "solarcharger" => matches!(
+            leaf,
+            "Yield/Power"
+                | "Dc/0/Power"
+                | "Dc/0/Current"
+                | "Pv/V"
+                | "ProductName"
+                | "CustomName"
+                | "Serial"
+        ),
+        "pvinverter" => {
+            matches!(
+                leaf,
+                "Ac/Power"
+                    | "Ac/L1/Power"
+                    | "Ac/L2/Power"
+                    | "Ac/L1/Voltage"
+                    | "Ac/L2/Voltage"
+                    | "Ac/L1/Current"
+                    | "Ac/L2/Current"
+                    | "ProductName"
+                    | "CustomName"
+                    | "Serial"
+            )
+        }
+        "tank" => leaf == "Level" || leaf == "ProductName" || leaf == "CustomName",
+        "pump" => leaf == "Status" || leaf == "ProductName" || leaf == "CustomName",
+        "ev" | "evcharger" => {
+            leaf.contains("Power")
+                || leaf == "ProductName"
+                || leaf == "CustomName"
+                || leaf == "Status"
+                || leaf == "Mode"
+        }
+        "acload" => {
+            matches!(
+                leaf,
+                "Ac/Power" | "Ac/L1/Power" | "ProductName" | "CustomName"
+            )
+        }
+        _ => false,
+    }
 }
 
 fn apply_update(snap: &mut Snapshot, update: ParsedUpdate) {
@@ -178,4 +299,37 @@ mod tests {
         );
         assert!(snap.system.is_empty());
     }
+
+    #[test]
+    fn path_keep_drops_settings_and_noise() {
+        assert!(!super::path_keep("settings", "0/Settings/Foo"));
+        assert!(!super::path_keep("system", "0/Debug/BatteryOperationalLimits/SolarVoltageOffset"));
+        assert!(super::path_keep("system", "0/Dc/Battery/Current"));
+        assert!(super::path_keep("battery", "289/Dc/0/Current"));
+        assert!(super::path_keep("solarcharger", "290/Yield/Power"));
+        assert!(!super::path_keep("solarcharger", "290/History/Daily/0/Yield"));
+    }
+
+    #[test]
+    fn update_without_sse_subscribers_skips_clone_broadcast() {
+        let shared = Shared::new();
+        // No start_sse_coalesce needed — receiver_count is 0.
+        shared.update(ParsedUpdate {
+            service: "system".into(),
+            path: "0/Dc/Battery/Current".into(),
+            value: json!(23.5),
+        });
+        assert_eq!(
+            shared.snapshot.read().system.get("0/Dc/Battery/Current"),
+            Some(&json!(23.5))
+        );
+        // Noise path ignored
+        shared.update(ParsedUpdate {
+            service: "settings".into(),
+            path: "0/Settings/X".into(),
+            value: json!(1),
+        });
+        assert!(shared.snapshot.read().settings.is_empty());
+    }
+
 }

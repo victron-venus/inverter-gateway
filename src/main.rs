@@ -24,6 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(bind = %cfg.http_bind, mqtt = %cfg.mqtt_host, "starting inverter-gateway");
 
     let state = AppState::new(cfg.clone());
+    state.shared.start_sse_coalesce();
     let mqtt = MqttBridge::start(state.clone(), cfg.clone());
 
     let app = http::router(state.clone());
@@ -44,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,inverter_gateway=debug"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,inverter_gateway=info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
