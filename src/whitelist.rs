@@ -17,10 +17,7 @@ fn builtin_whitelist() -> Whitelist {
         // dbus-flashmq; AcknowledgeAll is the write that actually updates Cerbo.
         (
             "acknowledge_all_notifications",
-            (
-                "platform/0/Notifications/AcknowledgeAll",
-                r#"{"value":1}"#,
-            ),
+            ("platform/0/Notifications/AcknowledgeAll", r#"{"value":1}"#),
         ),
     ]
     .into_iter()
