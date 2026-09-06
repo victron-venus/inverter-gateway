@@ -7,10 +7,19 @@ type CommandDef = (&'static str, &'static str);
 type Whitelist = HashMap<&'static str, CommandDef>;
 
 fn builtin_whitelist() -> Whitelist {
-    vec![(
-        "silence_alarm",
-        ("vebus/0/Alarm", r#"{"SilenceAlarm":"1"}"#),
-    )]
+    vec![
+        (
+            "silence_alarm",
+            ("vebus/0/Alarm", r#"{"SilenceAlarm":"1"}"#),
+        ),
+        // Venus-platform notifications (GUIv2 / dbus wiki AcknowledgeAll).
+        // Per-slot W/.../Notifications/N/Acknowledged is often ignored by
+        // dbus-flashmq; AcknowledgeAll is the write that actually updates Cerbo.
+        (
+            "acknowledge_all_notifications",
+            ("platform/0/Notifications/AcknowledgeAll", r#"{"value":1}"#),
+        ),
+    ]
     .into_iter()
     .collect()
 }
@@ -63,6 +72,7 @@ mod tests {
     #[test]
     fn whitelist_has_known_commands() {
         super::is_known("silence_alarm");
+        assert!(super::is_known("acknowledge_all_notifications"));
         assert!(!super::is_known("reboot"));
         assert!(!super::is_known("raw_mqtt_passthrough"));
     }
