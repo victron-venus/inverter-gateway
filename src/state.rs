@@ -33,6 +33,9 @@ pub struct Snapshot {
     pub evcharger: HashMap<String, Value>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub acload: HashMap<String, Value>,
+    /// Venus-platform notification slots (GUIv2 Notifications/[0-19]).
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub platform: HashMap<String, Value>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub settings: HashMap<String, Value>,
 }
@@ -132,22 +135,25 @@ fn path_keep(service: &str, path: &str) -> bool {
                 || leaf == "Hub4/L1/AcPowerSetpoint"
                 || leaf.starts_with("Ac/Out/")
                 || leaf.starts_with("Ac/ActiveIn/")
+                || leaf.starts_with("Alarms/")
         }
-        "battery" => matches!(
-            leaf,
-            "Soc"
-                | "Dc/0/Voltage"
-                | "Dc/0/Current"
-                | "Dc/0/Power"
-                | "ProductName"
-                | "CustomName"
-                | "Serial"
-                | "TimeToGo"
-                | "System/MaxCellVoltage"
-                | "System/MinCellVoltage"
-                | "System/MaxVoltageCellId"
-                | "System/MinVoltageCellId"
-        ),
+        "battery" => {
+            matches!(
+                leaf,
+                "Soc"
+                    | "Dc/0/Voltage"
+                    | "Dc/0/Current"
+                    | "Dc/0/Power"
+                    | "ProductName"
+                    | "CustomName"
+                    | "Serial"
+                    | "TimeToGo"
+                    | "System/MaxCellVoltage"
+                    | "System/MinCellVoltage"
+                    | "System/MaxVoltageCellId"
+                    | "System/MinVoltageCellId"
+            ) || leaf.starts_with("Alarms/")
+        }
         "solarcharger" => matches!(
             leaf,
             "Yield/Power"
@@ -188,6 +194,28 @@ fn path_keep(service: &str, path: &str) -> bool {
                 "Ac/Power" | "Ac/L1/Power" | "ProductName" | "CustomName"
             )
         }
+        // GUIv2 notification slots: Notifications/<slot>/<Field>
+        // (same fields inverter-desktop maps into banner notifications).
+        "platform" => {
+            let mut parts = leaf.split('/');
+            let kind = parts.next();
+            let slot = parts.next().and_then(|s| s.parse::<u32>().ok());
+            let field = parts.next();
+            kind == Some("Notifications")
+                && slot.is_some_and(|s| s <= 20)
+                && parts.next().is_none()
+                && matches!(
+                    field,
+                    Some("Description")
+                        | Some("DeviceName")
+                        | Some("Service")
+                        | Some("DateTime")
+                        | Some("Type")
+                        | Some("Active")
+                        | Some("Acknowledged")
+                        | Some("Silenced")
+                )
+        }
         _ => false,
     }
 }
@@ -214,6 +242,7 @@ fn apply_update(snap: &mut Snapshot, update: ParsedUpdate) {
         "ev" => &mut snap.ev,
         "evcharger" => &mut snap.evcharger,
         "acload" => &mut snap.acload,
+        "platform" => &mut snap.platform,
         "settings" => &mut snap.settings,
         _ => return,
     };
@@ -313,6 +342,30 @@ mod tests {
             "solarcharger",
             "290/History/Daily/0/Yield"
         ));
+    }
+
+    #[test]
+    fn platform_notification_leaf_kept_and_applied() {
+        assert!(path_keep("platform", "0/Notifications/3/Description"));
+        assert!(path_keep("battery", "512/Alarms/HighVoltage"));
+        assert!(path_keep("vebus", "0/Alarms/GridLost"));
+        assert!(!path_keep("platform", "0/SomethingElse"));
+        assert!(!path_keep("platform", "0/Notifications/3/UnknownField"));
+        assert!(!path_keep("platform", "0/Notifications/99/Description"));
+
+        let mut snap = Snapshot::default();
+        apply_update(
+            &mut snap,
+            ParsedUpdate {
+                service: "platform".into(),
+                path: "0/Notifications/3/Description".into(),
+                value: json!("High cell voltage"),
+            },
+        );
+        assert_eq!(
+            snap.platform.get("0/Notifications/3/Description"),
+            Some(&json!("High cell voltage"))
+        );
     }
 
     #[test]

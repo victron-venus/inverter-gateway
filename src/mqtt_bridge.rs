@@ -75,6 +75,8 @@ impl MqttBridge {
             "ev/+/#",
             "evcharger/+/#",
             "acload/+/#",
+            // GUIv2 / Venus-platform notification slots (AcknowledgeAll target).
+            "platform/+/#",
         ];
         for filter in filters {
             let full = format!("{prefix}{filter}");
