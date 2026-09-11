@@ -346,10 +346,7 @@ mod tests {
 
     #[test]
     fn platform_notification_leaf_kept_and_applied() {
-        assert!(path_keep(
-            "platform",
-            "0/Notifications/3/Description"
-        ));
+        assert!(path_keep("platform", "0/Notifications/3/Description"));
         assert!(path_keep("battery", "512/Alarms/HighVoltage"));
         assert!(path_keep("vebus", "0/Alarms/GridLost"));
         assert!(!path_keep("platform", "0/SomethingElse"));
