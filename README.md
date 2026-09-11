@@ -182,6 +182,8 @@ this repo).
 | `silence_alarm` | `W/<portal_id>/vebus/0/Alarm` | `{"SilenceAlarm":"1"}` | Acknowledge active alarm |
 | `acknowledge_all_notifications` | `W/<portal_id>/platform/0/Notifications/AcknowledgeAll` | `{"value":1}` | Dismiss Venus GUIv2 banners (per-slot ack is often ignored) |
 
+Snapshot also includes `platform` leaves (`<inst>/Notifications/<slot>/{Description,DeviceName,Service,DateTime,Type,Active,Acknowledged,Silenced}`) plus `Alarms/*` under `vebus`/`battery` so remote dashboards can render the same banners as LAN MQTT without a Cerbo client.
+
 MQTT subscriptions use `N/<portal_id>/` (read). Command publications use
 `W/<portal_id>/` (write). Both are derived from `VICTRON_PORTAL_ID` or
 `VICTRON_TOPIC_PREFIX`.
