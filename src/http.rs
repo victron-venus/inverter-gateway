@@ -42,6 +42,7 @@ type SharedState = Arc<AppState>;
 #[allow(dead_code)]
 enum AppError {
     Unauthorized,
+    Unavailable,
     NotFound(String),
     BadRequest(String),
     Internal(String),
@@ -53,6 +54,11 @@ impl IntoResponse for AppError {
             AppError::Unauthorized => {
                 (StatusCode::UNAUTHORIZED, "Invalid or missing bearer token").into_response()
             }
+            AppError::Unavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "MQTT telemetry unavailable",
+            )
+                .into_response(),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg).into_response(),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response(),
@@ -84,7 +90,7 @@ fn require_auth(state: &SharedState, headers: &HeaderMap) -> Result<(), AppError
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 async fn health(State(state): State<SharedState>) -> Json<HealthResponse> {
-    let connected = *state.shared.mqtt_connected.read();
+    let connected = state.shared.is_connected();
     Json(HealthResponse {
         status: if connected { "ok" } else { "degraded" }.to_string(),
         mqtt_connected: connected,
@@ -102,7 +108,7 @@ async fn snapshot(
     headers: HeaderMap,
 ) -> Result<Json<Snapshot>, AppError> {
     require_auth(&state, &headers)?;
-    Ok(Json(state.snapshot()))
+    state.snapshot().map(Json).ok_or(AppError::Unavailable)
 }
 
 async fn events(State(state): State<SharedState>, headers: HeaderMap) -> Response {
@@ -110,18 +116,28 @@ async fn events(State(state): State<SharedState>, headers: HeaderMap) -> Respons
         return e.into_response();
     }
 
-    let rx = state.shared.sse_tx.subscribe();
+    let Some((generation, rx)) = state.shared.subscribe() else {
+        return AppError::Unavailable.into_response();
+    };
 
-    let stream = tokio_stream::wrappers::BroadcastStream::new(rx).map(|res| match res {
-        Ok(snap) => {
-            let data = serde_json::to_string(&snap).unwrap_or_else(|_| "{}".into());
-            Ok::<_, std::convert::Infallible>(sse::Event::default().data(data))
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "sse broadcast error");
-            Ok(sse::Event::default().comment("error"))
-        }
-    });
+    let stream = tokio_stream::wrappers::BroadcastStream::new(rx)
+        .take_while(move |res| {
+            state.shared.generation_is_connected(generation)
+                && res
+                    .as_ref()
+                    .is_ok_and(|event| event.generation == generation && event.snapshot.is_some())
+        })
+        .map(|res| match res {
+            Ok(event) => {
+                let snap = event.snapshot;
+                let data = serde_json::to_string(&snap).unwrap_or_else(|_| "{}".into());
+                Ok::<_, std::convert::Infallible>(sse::Event::default().data(data))
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "sse broadcast error");
+                Ok(sse::Event::default().comment("error"))
+            }
+        });
 
     Sse::new(stream)
         .keep_alive(sse::KeepAlive::default())
@@ -252,7 +268,7 @@ mod tests {
     #[test]
     fn health_reflects_mqtt_connected() {
         let state = make_state(cfg_insecure());
-        *state.shared.mqtt_connected.write() = true;
+        state.shared.set_connected(true);
         let s = Arc::clone(&state);
         let resp = tokio::runtime::Runtime::new()
             .unwrap()
@@ -271,5 +287,106 @@ mod tests {
             .block_on(async { health(State(s)).await });
         assert!(!resp.mqtt_connected);
         assert_eq!(resp.status, "degraded");
+    }
+    fn update_voltage(state: &SharedState, value: i32) {
+        state.shared.update(crate::state::ParsedUpdate {
+            service: "battery".into(),
+            path: "0/Dc/0/Voltage".into(),
+            value: serde_json::json!(value),
+        });
+    }
+
+    #[tokio::test]
+    async fn snapshot_outage_and_recovery_preserve_auth_and_liveness() {
+        let state = make_state(cfg_with_token("secret"));
+        let mut headers = HeaderMap::new();
+        headers.insert("Authorization", "Bearer secret".parse().unwrap());
+        for connected in [false, true] {
+            state.shared.set_connected(connected);
+            let response = snapshot(State(state.clone()), headers.clone())
+                .await
+                .into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(health(State(state.clone())).await.mqtt_connected, connected);
+            assert_eq!(
+                snapshot(State(state.clone()), HeaderMap::new())
+                    .await
+                    .into_response()
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+            assert_eq!(
+                events(State(state.clone()), HeaderMap::new())
+                    .await
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+            assert_eq!(
+                events(State(state.clone()), headers.clone()).await.status(),
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+        }
+        update_voltage(&state, 52);
+        assert_eq!(
+            snapshot(State(state.clone()), headers.clone())
+                .await
+                .unwrap_or_else(|_| panic!("expected telemetry"))
+                .0
+                .battery["0/Dc/0/Voltage"],
+            52
+        );
+        state.shared.set_connected(false);
+        update_voltage(&state, 99); // Late data cannot repopulate an offline cache.
+        state.shared.set_connected(true);
+        assert!(state.snapshot().is_none());
+        update_voltage(&state, 48);
+        assert_eq!(state.snapshot().unwrap().battery["0/Dc/0/Voltage"], 48);
+    }
+
+    #[tokio::test]
+    async fn sse_discards_queued_old_snapshots_after_fast_reconnect() {
+        let state = make_state(cfg_insecure());
+        state.shared.set_connected(true);
+        update_voltage(&state, 52);
+        let response = events(State(state.clone()), HeaderMap::new()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        state.shared.broadcast_snapshot();
+        state.shared.set_connected(false);
+        state.shared.set_connected(true);
+        update_voltage(&state, 48);
+        state.shared.broadcast_snapshot();
+        let body = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            axum::body::to_bytes(response.into_body(), 4096),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            body.is_empty(),
+            "old SSE session must terminate without stale data"
+        );
+        let response = events(State(state.clone()), HeaderMap::new()).await;
+        update_voltage(&state, 49);
+        state.shared.broadcast_snapshot();
+        let mut body = response.into_body().into_data_stream();
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(1), body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let frame = std::str::from_utf8(&frame).unwrap();
+        let data = frame.strip_prefix("data: ").unwrap().trim();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(data).unwrap(),
+            serde_json::json!({"battery": {"0/Dc/0/Voltage": 49}})
+        );
+        state.shared.set_connected(false);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), body.next())
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,12 +39,24 @@ pub struct Snapshot {
     pub settings: HashMap<String, Value>,
 }
 
+#[derive(Default)]
+struct Telemetry {
+    snapshot: Snapshot,
+    connected: bool,
+    ready: bool,
+    generation: u64,
+    dirty: bool,
+}
+
+#[derive(Clone)]
+pub struct SnapshotEvent {
+    pub generation: u64,
+    pub snapshot: Option<Snapshot>,
+}
+
 pub struct Shared {
-    pub snapshot: RwLock<Snapshot>,
-    pub sse_tx: broadcast::Sender<Snapshot>,
-    /// Set when snapshot changed and at least one SSE client may need a push.
-    sse_dirty: AtomicBool,
-    pub mqtt_connected: RwLock<bool>,
+    telemetry: RwLock<Telemetry>,
+    sse_tx: broadcast::Sender<SnapshotEvent>,
     pub command_tx: parking_lot::Mutex<Option<mpsc::UnboundedSender<CommandRequest>>>,
 }
 
@@ -55,29 +66,77 @@ impl Shared {
     pub fn new() -> Arc<Self> {
         let (sse_tx, _) = broadcast::channel(64);
         Arc::new(Shared {
-            snapshot: RwLock::new(Snapshot::default()),
+            telemetry: RwLock::new(Telemetry::default()),
             sse_tx,
-            sse_dirty: AtomicBool::new(false),
-            mqtt_connected: RwLock::new(false),
             command_tx: parking_lot::Mutex::new(None),
         })
     }
 
-    /// Apply one MQTT leaf. Never clones the whole snapshot unless an SSE
-    /// subscriber exists — Victron floods hundreds of retained/live topics and
-    /// cloning ~100KB+ per message pegged Synology at ~60%+ CPU.
+    pub fn is_connected(&self) -> bool {
+        self.telemetry.read().connected
+    }
+
+    pub fn set_connected(&self, connected: bool) {
+        let mut telemetry = self.telemetry.write();
+        if telemetry.connected == connected {
+            return;
+        }
+        telemetry.connected = connected;
+        if !connected {
+            telemetry.generation += 1;
+            telemetry.snapshot = Snapshot::default();
+            telemetry.ready = false;
+            telemetry.dirty = false;
+            // Send under the same lock as coalescing: no old clone can follow this event.
+            let _ = self.sse_tx.send(SnapshotEvent {
+                generation: telemetry.generation,
+                snapshot: None,
+            });
+        }
+    }
+
+    pub fn snapshot(&self) -> Option<Snapshot> {
+        let telemetry = self.telemetry.read();
+        (telemetry.connected && telemetry.ready).then(|| telemetry.snapshot.clone())
+    }
+
+    pub fn subscribe(&self) -> Option<(u64, broadcast::Receiver<SnapshotEvent>)> {
+        let telemetry = self.telemetry.read();
+        let rx = self.sse_tx.subscribe();
+        (telemetry.connected && telemetry.ready).then_some((telemetry.generation, rx))
+    }
+
+    pub fn generation_is_connected(&self, generation: u64) -> bool {
+        let telemetry = self.telemetry.read();
+        telemetry.connected && telemetry.generation == generation
+    }
+
+    /// Apply only whitelisted leaves received during the current connection.
     pub fn update(&self, update: ParsedUpdate) {
         if !path_keep(&update.service, &update.path) {
             return;
         }
-        {
-            let mut snap = self.snapshot.write();
-            apply_update(&mut snap, update);
-        }
-        if self.sse_tx.receiver_count() == 0 {
+        let mut telemetry = self.telemetry.write();
+        if !telemetry.connected {
             return;
         }
-        self.sse_dirty.store(true, Ordering::Relaxed);
+        apply_update(&mut telemetry.snapshot, update);
+        telemetry.ready = true;
+        telemetry.dirty = self.sse_tx.receiver_count() > 0;
+    }
+
+    pub(crate) fn broadcast_snapshot(&self) {
+        let mut telemetry = self.telemetry.write();
+        if !telemetry.connected || !telemetry.dirty {
+            return;
+        }
+        telemetry.dirty = false;
+        if self.sse_tx.receiver_count() > 0 {
+            let _ = self.sse_tx.send(SnapshotEvent {
+                generation: telemetry.generation,
+                snapshot: Some(telemetry.snapshot.clone()),
+            });
+        }
     }
 
     /// Coalesce SSE broadcasts to at most once per second with the latest snapshot.
@@ -88,14 +147,7 @@ impl Shared {
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tick.tick().await;
-                if !this.sse_dirty.swap(false, Ordering::Relaxed) {
-                    continue;
-                }
-                if this.sse_tx.receiver_count() == 0 {
-                    continue;
-                }
-                let snap = this.snapshot.read().clone();
-                let _ = this.sse_tx.send(snap);
+                this.broadcast_snapshot();
             }
         });
     }
@@ -261,8 +313,8 @@ impl AppState {
         Arc::new(AppState { cfg, shared })
     }
 
-    pub fn snapshot(&self) -> Snapshot {
-        self.shared.snapshot.read().clone()
+    pub fn snapshot(&self) -> Option<Snapshot> {
+        self.shared.snapshot()
     }
 }
 
@@ -311,7 +363,7 @@ mod tests {
     #[test]
     fn mqtt_connected_starts_false() {
         let shared = Shared::new();
-        assert!(!*shared.mqtt_connected.read());
+        assert!(!shared.is_connected());
     }
 
     #[test]
@@ -371,6 +423,7 @@ mod tests {
     #[test]
     fn update_without_sse_subscribers_skips_clone_broadcast() {
         let shared = Shared::new();
+        shared.set_connected(true);
         // No start_sse_coalesce needed — receiver_count is 0.
         shared.update(ParsedUpdate {
             service: "system".into(),
@@ -378,7 +431,12 @@ mod tests {
             value: json!(23.5),
         });
         assert_eq!(
-            shared.snapshot.read().system.get("0/Dc/Battery/Current"),
+            shared
+                .telemetry
+                .read()
+                .snapshot
+                .system
+                .get("0/Dc/Battery/Current"),
             Some(&json!(23.5))
         );
         // Noise path ignored
@@ -387,6 +445,6 @@ mod tests {
             path: "0/Settings/X".into(),
             value: json!(1),
         });
-        assert!(shared.snapshot.read().settings.is_empty());
+        assert!(shared.telemetry.read().snapshot.settings.is_empty());
     }
 }
