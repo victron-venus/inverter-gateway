@@ -9,6 +9,12 @@ This is the **read-mostly** remote layer for [inverter-desktop](https://github.c
 the desktop app polls `/v1/snapshot` (and can stream `/v1/events`) through
 Cloudflare Access + a bearer token, instead of talking to Cerbo MQTT on the LAN.
 
+<!-- ci-release-process:start -->
+## Release process
+
+See the [release strategy](RELEASING.md) for validation, nightly, beta, RC and stable promotion rules, and the [operator runbook](docs/release-workflow.md) for local commands.
+<!-- ci-release-process:end -->
+
 ## How it works
 
 ```mermaid

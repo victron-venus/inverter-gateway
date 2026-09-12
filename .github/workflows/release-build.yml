@@ -1,0 +1,74 @@
+name: Build release assets
+'on':
+  workflow_call:
+    inputs:
+      version:
+        description: Committed base version, without a v prefix or channel suffix
+        required: true
+        type: string
+      channel:
+        description: nightly, beta or rc; stable promotes existing RC bytes
+        required: true
+        type: string
+permissions:
+  contents: read
+env:
+  RELEASE_VERSION: ${{ inputs.version }}
+  RELEASE_CHANNEL: ${{ inputs.channel }}
+defaults:
+  run:
+    shell: bash
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - name: Harden runner
+      uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1
+      with:
+        egress-policy: audit
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: Verify committed release version
+      run: python3 scripts/check-release-version.py "$RELEASE_VERSION" "$RELEASE_CHANNEL"
+    - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+    - run: bash scripts/release-build.sh "$RELEASE_VERSION" "$RELEASE_CHANNEL"
+    - name: Store release assets
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: release-assets-server
+        path: release-output/*.tar.gz
+        if-no-files-found: error
+        retention-days: 14
+  container:
+    name: Build container archive
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+    - name: Harden runner
+      uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1
+      with:
+        egress-policy: audit
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - name: Verify committed release version
+      run: python3 scripts/check-release-version.py "$RELEASE_VERSION" "$RELEASE_CHANNEL"
+    - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a
+    - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
+    - name: Build OCI image archive
+      uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
+      with:
+        context: .
+        platforms: linux/amd64
+        push: false
+        outputs: type=oci,dest=inverter-gateway-container.oci.tar
+        tags: inverter-gateway:${{ inputs.version }}
+        sbom: true
+        provenance: mode=max
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    - name: Store release assets
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: release-assets-container
+        path: inverter-gateway-container.oci.tar
+        if-no-files-found: error
+        retention-days: 14

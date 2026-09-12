@@ -6,3 +6,4 @@ logs/
 **/*.rs.bk
 *.pdb
 .DS_Store
+/release-output/

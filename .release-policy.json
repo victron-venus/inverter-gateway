@@ -1,0 +1,24 @@
+{
+  "version_file": "Cargo.toml",
+  "validation_workflows": [
+    "ci.yml",
+    "codeql.yml"
+  ],
+  "artifact_pattern": "release-assets*",
+  "local_checks": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo test --locked --all-targets"
+  ],
+  "notes": [
+    "Container is exported as an OCI archive; registry/deployment promotion must consume it without rebuilding.",
+    "Existing Linux amd64 target is retained; live MQTT/hardware validation remains separate."
+  ],
+  "container_assets": {
+    "inverter-gateway-container.oci.tar": "ghcr.io/victron-venus/inverter-gateway"
+  },
+  "repository": "victron-venus/inverter-gateway",
+  "mode": "release",
+  "default_branch": "main",
+  "visibility": "public"
+}
