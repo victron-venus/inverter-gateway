@@ -57,6 +57,10 @@ in-memory snapshot → clients `GET /v1/snapshot` or subscribe to `GET /v1/event
 `GATEWAY_API_TOKEN` (required unless `GATEWAY_ALLOW_INSECURE=1`). `/health` stays
 open for probes and reports `mqtt_connected`.
 
+MQTT reconnects and telemetry processing continue when outbound requests back up;
+queued commands retain their topic, payload, and QoS. Gateway shutdown also remains
+responsive during broker outages. Commands still pending at shutdown are not persisted.
+
 ## Endpoints
 
 | Method | Path | Auth | Purpose |
