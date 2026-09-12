@@ -30,6 +30,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/health", get(health))
         .route("/v1/snapshot", get(snapshot))
         .route("/v1/events", get(events))
+        .route("/v1/energy", get(energy))
         .route("/v1/commands/{name}", get(command_get).post(command_post))
         .layer(cors)
         .with_state(state)
@@ -87,6 +88,26 @@ fn require_auth(state: &SharedState, headers: &HeaderMap) -> Result<(), AppError
     }
 }
 
+fn require_read_auth(state: &SharedState, headers: &HeaderMap) -> Result<(), AppError> {
+    if require_auth(state, headers).is_ok() {
+        return Ok(());
+    }
+    let Some(token) = &state.cfg.read_token else {
+        return Err(AppError::Unauthorized);
+    };
+    let header = headers
+        .get("Authorization")
+        .and_then(|value| value.to_str().ok())
+        .ok_or(AppError::Unauthorized)?;
+    let bearer = header.strip_prefix("Bearer ").unwrap_or(header);
+    let ok: bool = subtle::ConstantTimeEq::ct_eq(bearer.as_bytes(), token.as_bytes()).into();
+    if ok {
+        Ok(())
+    } else {
+        Err(AppError::Unauthorized)
+    }
+}
+
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 async fn health(State(state): State<SharedState>) -> Json<HealthResponse> {
@@ -107,12 +128,25 @@ async fn snapshot(
     State(state): State<SharedState>,
     headers: HeaderMap,
 ) -> Result<Json<Snapshot>, AppError> {
-    require_auth(&state, &headers)?;
+    require_read_auth(&state, &headers)?;
     state.snapshot().map(Json).ok_or(AppError::Unavailable)
 }
 
+async fn energy(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    require_read_auth(&state, &headers)?;
+    // Consumers must evaluate fresh telemetry for each question, including outages.
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(state.shared.energy(&state.cfg.energy)),
+    )
+        .into_response())
+}
+
 async fn events(State(state): State<SharedState>, headers: HeaderMap) -> Response {
-    if let Err(e) = require_auth(&state, &headers) {
+    if let Err(e) = require_read_auth(&state, &headers) {
         return e.into_response();
     }
 
@@ -211,6 +245,8 @@ mod tests {
             mqtt_client_id: "c".into(),
             http_bind: "127.0.0.1:0".parse().unwrap(),
             api_token: Some(token.to_string()),
+            read_token: Some("read-secret".into()),
+            energy: crate::energy::EnergyConfig::default(),
             topic_prefix: "N/test/".into(),
             write_topic_prefix: "W/test/".into(),
             allow_insecure: false,
@@ -388,5 +424,113 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn read_token_is_limited_to_telemetry_routes() {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+
+        let state = make_state(cfg_with_token("full-secret"));
+        state.shared.set_connected(true);
+        update_voltage(&state, 52);
+        let (tx, mut commands) = tokio::sync::mpsc::unbounded_channel();
+        *state.shared.command_tx.lock() = Some(tx);
+        let app = router(state.clone());
+        for path in ["/v1/snapshot", "/v1/events", "/v1/energy"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header("Authorization", "Bearer read-secret")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+        }
+        for method in ["GET", "POST"] {
+            for path in ["/v1/commands/silence_alarm", "/v1/commands/unknown"] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(path)
+                            .header("Authorization", "Bearer read-secret")
+                            .header("Content-Type", "application/json")
+                            .body(Body::from("{}"))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::UNAUTHORIZED,
+                    "{method} {path}"
+                );
+            }
+        }
+        assert!(commands.try_recv().is_err());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/commands/silence_alarm")
+                    .header("Authorization", "Bearer full-secret")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(commands.try_recv().unwrap().0, "W/test/vebus/0/Alarm");
+    }
+
+    #[tokio::test]
+    async fn energy_outage_is_an_authenticated_noncacheable_semantic_response() {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+
+        let state = make_state(cfg_with_token("full-secret"));
+        let app = router(state);
+        for token in [
+            None,
+            Some("wrong"),
+            Some("read-secret"),
+            Some("full-secret"),
+        ] {
+            let mut request = Request::builder().uri("/v1/energy");
+            if let Some(token) = token {
+                request = request.header("Authorization", format!("Bearer {token}"));
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            if matches!(token, Some("read-secret" | "full-secret")) {
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(response.headers()["Cache-Control"], "no-store");
+                let body = axum::body::to_bytes(response.into_body(), 16384)
+                    .await
+                    .unwrap();
+                let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(value["schema_version"], 1);
+                assert_eq!(value["mqtt_connected"], false);
+                assert!(value["generated_at"].as_u64().unwrap() > 0);
+                assert_eq!(
+                    value["metrics"]["battery_soc"]["value"],
+                    serde_json::Value::Null
+                );
+                assert_eq!(value["reports"]["battery"]["status"], "unavailable");
+                assert_eq!(value["reports"]["status"]["status"], "unavailable");
+            } else {
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            }
+        }
     }
 }

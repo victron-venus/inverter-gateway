@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::config::Config;
+use crate::energy::{is_energy_path, EnergyConfig, EnergyResponse, Reading};
 
 /// Aggregated Cerbo MQTT leaf values, keyed by path under each service
 /// (e.g. system["0/Dc/Battery/Soc"] = 77.5).
@@ -42,6 +43,7 @@ pub struct Snapshot {
 #[derive(Default)]
 struct Telemetry {
     snapshot: Snapshot,
+    energy_readings: HashMap<String, Reading>,
     connected: bool,
     ready: bool,
     generation: u64,
@@ -85,6 +87,7 @@ impl Shared {
         if !connected {
             telemetry.generation += 1;
             telemetry.snapshot = Snapshot::default();
+            telemetry.energy_readings.clear();
             telemetry.ready = false;
             telemetry.dirty = false;
             // Send under the same lock as coalescing: no old clone can follow this event.
@@ -100,6 +103,16 @@ impl Shared {
         (telemetry.connected && telemetry.ready).then(|| telemetry.snapshot.clone())
     }
 
+    pub fn energy(&self, cfg: &EnergyConfig) -> EnergyResponse {
+        let telemetry = self.telemetry.read();
+        EnergyResponse::build(
+            cfg,
+            telemetry.connected,
+            &telemetry.energy_readings,
+            Instant::now(),
+        )
+    }
+
     pub fn subscribe(&self) -> Option<(u64, broadcast::Receiver<SnapshotEvent>)> {
         let telemetry = self.telemetry.read();
         let rx = self.sse_tx.subscribe();
@@ -113,15 +126,44 @@ impl Shared {
 
     /// Apply only whitelisted leaves received during the current connection.
     pub fn update(&self, update: ParsedUpdate) {
-        if !path_keep(&update.service, &update.path) {
+        // An empty/null device root invalidates every previously received leaf.
+        let removed_device = update.value.is_null()
+            && !update.path.contains('/')
+            && update.path.parse::<u32>().is_ok();
+        if !removed_device && !path_keep(&update.service, &update.path) {
             return;
         }
         let mut telemetry = self.telemetry.write();
         if !telemetry.connected {
             return;
         }
-        apply_update(&mut telemetry.snapshot, update);
-        telemetry.ready = true;
+        if removed_device {
+            let prefix = format!("{}/{}/", update.service, update.path);
+            telemetry
+                .energy_readings
+                .retain(|source, _| !source.starts_with(&prefix));
+            if let Some(bucket) = telemetry.snapshot.bucket_mut(&update.service) {
+                let prefix = format!("{}/", update.path);
+                bucket.retain(|path, _| !path.starts_with(&prefix));
+            }
+        } else {
+            if is_energy_path(&update.service, &update.path) {
+                let source = format!("{}/{}", update.service, update.path);
+                if update.value.is_null() {
+                    telemetry.energy_readings.remove(&source);
+                } else {
+                    telemetry.energy_readings.insert(
+                        source,
+                        Reading {
+                            value: update.value.clone(),
+                            received_at: Instant::now(),
+                        },
+                    );
+                }
+            }
+            apply_update(&mut telemetry.snapshot, update);
+            telemetry.ready = true;
+        }
         telemetry.dirty = self.sse_tx.receiver_count() > 0;
     }
 
@@ -163,6 +205,9 @@ pub struct ParsedUpdate {
 /// Keep only leaves the desktop mapper (and light extras) actually read.
 /// Drops the bulk of Cerbo chatter (settings, debug, unused AC phases, …).
 fn path_keep(service: &str, path: &str) -> bool {
+    if is_energy_path(service, path) {
+        return true;
+    }
     // path is everything after "<instance>/" — or empty.
     let (_inst, leaf) = match path.split_once('/') {
         Some((i, rest)) => (i, rest),
@@ -283,22 +328,30 @@ fn apply_update(snap: &mut Snapshot, update: ParsedUpdate) {
     } else {
         path
     };
-    let bucket = match service.as_str() {
-        "system" => &mut snap.system,
-        "vebus" => &mut snap.vebus,
-        "battery" => &mut snap.battery,
-        "solarcharger" => &mut snap.solarcharger,
-        "pvinverter" => &mut snap.pvinverter,
-        "tank" => &mut snap.tank,
-        "pump" => &mut snap.pump,
-        "ev" => &mut snap.ev,
-        "evcharger" => &mut snap.evcharger,
-        "acload" => &mut snap.acload,
-        "platform" => &mut snap.platform,
-        "settings" => &mut snap.settings,
-        _ => return,
+    let Some(bucket) = snap.bucket_mut(&service) else {
+        return;
     };
     bucket.insert(key, value);
+}
+
+impl Snapshot {
+    fn bucket_mut(&mut self, service: &str) -> Option<&mut HashMap<String, Value>> {
+        match service {
+            "system" => Some(&mut self.system),
+            "vebus" => Some(&mut self.vebus),
+            "battery" => Some(&mut self.battery),
+            "solarcharger" => Some(&mut self.solarcharger),
+            "pvinverter" => Some(&mut self.pvinverter),
+            "tank" => Some(&mut self.tank),
+            "pump" => Some(&mut self.pump),
+            "ev" => Some(&mut self.ev),
+            "evcharger" => Some(&mut self.evcharger),
+            "acload" => Some(&mut self.acload),
+            "platform" => Some(&mut self.platform),
+            "settings" => Some(&mut self.settings),
+            _ => None,
+        }
+    }
 }
 
 /// App state owned by the axum router.
@@ -390,7 +443,7 @@ mod tests {
         assert!(super::path_keep("system", "0/Dc/Battery/Current"));
         assert!(super::path_keep("battery", "289/Dc/0/Current"));
         assert!(super::path_keep("solarcharger", "290/Yield/Power"));
-        assert!(!super::path_keep(
+        assert!(super::path_keep(
             "solarcharger",
             "290/History/Daily/0/Yield"
         ));
@@ -446,5 +499,122 @@ mod tests {
             value: json!(1),
         });
         assert!(shared.telemetry.read().snapshot.settings.is_empty());
+    }
+
+    #[test]
+    fn energy_invalidation_follows_null_device_removal_and_reconnect() {
+        use crate::energy::{EnergyConfig, Status};
+
+        let shared = Shared::new();
+        let cfg = EnergyConfig::default();
+        shared.set_connected(true);
+        let update = |value| ParsedUpdate {
+            service: "system".into(),
+            path: "0/Dc/Battery/Soc".into(),
+            value,
+        };
+        shared.update(update(json!(65)));
+        assert_eq!(shared.energy(&cfg).metrics.battery_soc.value, Some(65.0));
+        shared.update(update(Value::Null));
+        assert_eq!(
+            shared.energy(&cfg).metrics.battery_soc.status,
+            Status::Unavailable
+        );
+        assert_eq!(shared.energy(&cfg).metrics.battery_soc.age_seconds, None);
+        shared.update(update(json!(66)));
+        shared.update(ParsedUpdate {
+            service: "system".into(),
+            path: "0".into(),
+            value: Value::Null,
+        });
+        assert_eq!(shared.energy(&cfg).metrics.battery_soc.value, None);
+        assert!(!shared
+            .snapshot()
+            .unwrap()
+            .system
+            .contains_key("0/Dc/Battery/Soc"));
+        shared.update(update(json!(67)));
+        shared.set_connected(false);
+        shared.update(update(json!(99)));
+        assert!(!shared.energy(&cfg).mqtt_connected);
+        shared.set_connected(true);
+        assert_eq!(shared.energy(&cfg).metrics.battery_soc.value, None);
+        assert_eq!(shared.energy(&cfg).metrics.battery_soc.age_seconds, None);
+        shared.update(update(json!(68)));
+        assert_eq!(shared.energy(&cfg).metrics.battery_soc.value, Some(68.0));
+    }
+
+    #[test]
+    fn unrelated_telemetry_cannot_refresh_an_energy_source() {
+        use crate::energy::{EnergyConfig, Status};
+
+        let shared = Shared::new();
+        shared.set_connected(true);
+        shared.update(ParsedUpdate {
+            service: "system".into(),
+            path: "0/Dc/Battery/Soc".into(),
+            value: json!(70),
+        });
+        shared
+            .telemetry
+            .write()
+            .energy_readings
+            .get_mut("system/0/Dc/Battery/Soc")
+            .unwrap()
+            .received_at = Instant::now() - Duration::from_secs(121);
+        shared.update(ParsedUpdate {
+            service: "battery".into(),
+            path: "0/Dc/0/Voltage".into(),
+            value: json!(52),
+        });
+        let response = shared.energy(&EnergyConfig::default());
+        assert_eq!(response.metrics.battery_soc.status, Status::Stale);
+        assert_eq!(response.metrics.battery_soc.value, None);
+        assert_eq!(response.metrics.battery_soc.age_seconds, Some(121));
+    }
+
+    #[test]
+    fn alarm_removal_and_disconnect_clear_confirmed_active_list() {
+        use crate::energy::{EnergyConfig, Status};
+
+        let shared = Shared::new();
+        let cfg = EnergyConfig::default()
+            .with_alarm_sources("battery/512/Alarms/LowVoltage")
+            .unwrap();
+        shared.set_connected(true);
+        let update = |value| ParsedUpdate {
+            service: "battery".into(),
+            path: "512/Alarms/LowVoltage".into(),
+            value,
+        };
+        shared.update(update(json!(2)));
+        assert_eq!(shared.energy(&cfg).alarms.active.len(), 1);
+        shared.update(update(Value::Null));
+        let removed = shared.energy(&cfg);
+        assert_eq!(removed.alarms.status, Status::Unavailable);
+        assert!(removed.alarms.active.is_empty());
+        assert!(!removed.reports.alarms.text.contains("No active alarms"));
+        shared.update(update(json!(0)));
+        assert_eq!(
+            shared.energy(&cfg).reports.alarms.text,
+            "No active alarms in the monitored sources."
+        );
+        shared.update(ParsedUpdate {
+            service: "battery".into(),
+            path: "512".into(),
+            value: Value::Null,
+        });
+        assert_eq!(shared.energy(&cfg).alarms.status, Status::Unavailable);
+        shared.update(update(json!(1)));
+        shared.set_connected(false);
+        assert!(shared.energy(&cfg).alarms.active.is_empty());
+        shared.set_connected(true);
+        assert_eq!(shared.energy(&cfg).alarms.status, Status::Unavailable);
+        assert!(!shared
+            .energy(&cfg)
+            .reports
+            .alarms
+            .text
+            .contains("No active alarms"));
     }
 }

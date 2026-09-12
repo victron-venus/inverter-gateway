@@ -1,7 +1,9 @@
 use tokio::signal;
 use tracing::{error, info, warn};
 
+mod alarms;
 mod config;
+mod energy;
 mod http;
 mod mqtt_bridge;
 mod state;

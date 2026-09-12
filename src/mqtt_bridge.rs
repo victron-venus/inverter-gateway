@@ -204,7 +204,12 @@ impl MqttBridge {
             return None;
         }
 
-        let payload_val: serde_json::Value = serde_json::from_slice(payload).ok()?;
+        // MQTT retained-message removal has an empty payload.
+        let payload_val: serde_json::Value = if payload.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(payload).ok()?
+        };
         let value = payload_val.get("value").cloned().unwrap_or(payload_val);
 
         Some(ParsedUpdate {
@@ -486,5 +491,17 @@ mod tests {
             Some("b827ebea1ece")
         );
         assert_eq!(MqttBridge::portal_id("N/<portal_id>/"), None);
+    }
+
+    #[test]
+    fn empty_retained_message_and_json_null_invalidate_a_leaf() {
+        for payload in [b"".as_slice(), br#"{"value":null}"#, b"null"] {
+            let update =
+                MqttBridge::parse("N/test/system/0/Dc/Battery/Soc", payload, "N/test/").unwrap();
+            assert!(update.value.is_null());
+        }
+        assert!(
+            MqttBridge::parse("N/test/system/0/Dc/Battery/Soc", b"invalid", "N/test/").is_none()
+        );
     }
 }
