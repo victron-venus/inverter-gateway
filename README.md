@@ -209,6 +209,16 @@ Cerbo MQTT is very chatty. The gateway:
 
 Desktop Remote Gateway polls `GET /v1/snapshot` (no SSE required).
 
+Authenticated snapshot and SSE requests return HTTP 503 while MQTT is disconnected
+or until the first accepted telemetry leaf arrives after connecting. `/health`
+remains available and reports the MQTT connection independently. A disconnect
+clears the cached snapshot and closes existing SSE streams, including queued
+pre-outage updates. Clients must reconnect the stream after telemetry resumes;
+the JSON snapshot schema and offline command queuing policy are unchanged.
+Snapshots then fill incrementally as current-session MQTT values arrive; the
+first leaf does not guarantee that every service has reported yet.
+
+
 ## Development
 
 ```bash

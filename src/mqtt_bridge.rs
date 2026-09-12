@@ -106,7 +106,7 @@ impl MqttBridge {
             _ = Self::poll_events(eventloop, &shared, &topic_prefix, connected_tx) => {},
             _ = Self::send_requests(&client, &topic_prefix, command_rx, connected_rx) => {},
         }
-        *shared.mqtt_connected.write() = false;
+        shared.set_connected(false);
         info!("mqtt loop stopped");
     }
 
@@ -128,19 +128,19 @@ impl MqttBridge {
                 }
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     info!("mqtt connected");
-                    *shared.mqtt_connected.write() = true;
+                    shared.set_connected(true);
                     // Wake the producer without blocking the queue's consumer.
                     connected.send_replace(());
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => {
                     info!("mqtt disconnected by broker");
-                    *shared.mqtt_connected.write() = false;
+                    shared.set_connected(false);
                 }
                 Ok(Event::Incoming(Packet::PingResp)) | Ok(Event::Outgoing(_)) => {}
                 Ok(Event::Incoming(other)) => debug!(packet = ?other, "mqtt packet"),
                 Err(e) => {
                     error!(error = %e, "mqtt connection error");
-                    *shared.mqtt_connected.write() = false;
+                    shared.set_connected(false);
                     tokio::time::sleep(Duration::from_secs(5)).await;
                 }
             }
@@ -340,15 +340,38 @@ mod tests {
             if !traffic_ok {
                 break;
             }
+            // ConnAck alone cannot revive values retained from the previous session.
+            assert!(shared.is_connected());
+            assert!(shared.snapshot().is_none());
+            let topic = b"N/test/battery/0/Dc/0/Voltage";
+            let payload = format!("{{\"value\":{}}}", 52 - round);
+            let mut packet = vec![0x30, (2 + topic.len() + payload.len()) as u8];
+            packet.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+            packet.extend_from_slice(topic);
+            packet.extend_from_slice(payload.as_bytes());
+            socket.write_all(&packet).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while shared.snapshot().is_none() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                shared.snapshot().unwrap().battery["0/Dc/0/Voltage"],
+                52 - round
+            );
             if round == 0 {
                 drop(socket);
                 tokio::time::timeout(Duration::from_secs(1), async {
-                    while *shared.mqtt_connected.read() {
+                    while shared.is_connected() {
                         tokio::task::yield_now().await;
                     }
                 })
                 .await
                 .unwrap();
+                assert!(shared.snapshot().is_none());
+                assert!(shared.subscribe().is_none());
                 // This request arrives during the reconnect delay and must
                 // survive until the replacement broker connection is ready.
                 command_tx
@@ -368,7 +391,7 @@ mod tests {
         }
         assert!(traffic_ok, "outbound queue prevented event-loop progress");
         assert!(stopped.is_ok(), "blocked enqueue prevented shutdown");
-        assert!(!*shared.mqtt_connected.read());
+        assert!(!shared.is_connected());
     }
 
     #[tokio::test]
