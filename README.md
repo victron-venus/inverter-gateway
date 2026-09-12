@@ -148,7 +148,7 @@ cp .env.example .env   # gitignored secrets — fill real MQTT / portal / token
 
 # Pull prebuilt image from public GHCR (latest GitHub release, or IMAGE_TAG=…)
 ./deploy-from-release
-IMAGE_TAG=0.2.1 ./deploy-from-release
+IMAGE_TAG=0.2.4 ./deploy-from-release
 ```
 
 CI publishes **public** `linux/amd64` images to `ghcr.io/victron-venus/inverter-gateway`
