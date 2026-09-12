@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inverter-gateway
+  labels:
+    app: inverter-gateway
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: inverter-gateway
+  template:
+    metadata:
+      labels:
+        app: inverter-gateway
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: syn
+      containers:
+        - name: inverter-gateway
+          image: ghcr.io/victron-venus/inverter-gateway:0.3.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: inverter-gateway
+          ports:
+            - name: http
+              containerPort: 8080
+              hostPort: 9150
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
