@@ -1,3 +1,4 @@
+use crate::energy::EnergyConfig;
 use std::env;
 use std::net::SocketAddr;
 
@@ -10,6 +11,9 @@ pub struct Config {
     pub mqtt_client_id: String,
     pub http_bind: SocketAddr,
     pub api_token: Option<String>,
+    /// Optional credential restricted to telemetry reads.
+    pub read_token: Option<String>,
+    pub energy: EnergyConfig,
     /// Victron MQTT topic prefix for reading, e.g. "N/<portal_id>/"
     /// See <https://www.victronenergy.com/services-and-support/cerbo-gx>
     pub topic_prefix: String,
@@ -70,6 +74,20 @@ impl Config {
             .map_err(|_| -> ConfigError { "invalid HTTP_BIND".into() })?;
 
         let api_token = env::var("GATEWAY_API_TOKEN").ok().filter(|s| !s.is_empty());
+        let read_token = env::var("GATEWAY_READ_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
+        if read_token.is_some() && read_token == api_token {
+            return Err("GATEWAY_READ_TOKEN must differ from GATEWAY_API_TOKEN".into());
+        }
+        let energy = EnergyConfig::parse(
+            &env::var("GATEWAY_ENERGY_BATTERY_SOURCE")
+                .unwrap_or_else(|_| "system/0/Dc/Battery/Soc".into()),
+            &env::var("GATEWAY_ENERGY_SOLAR_POWER_SOURCES").unwrap_or_default(),
+            &env::var("GATEWAY_ENERGY_SOLAR_TODAY_SOURCES").unwrap_or_default(),
+            &env::var("GATEWAY_ENERGY_MAX_AGE_SECS").unwrap_or_else(|_| "120".into()),
+        )?
+        .with_alarm_sources(&env::var("GATEWAY_ENERGY_ALARM_SOURCES").unwrap_or_default())?;
         let allow_insecure = env::var("GATEWAY_ALLOW_INSECURE")
             .map(|v| v == "1")
             .unwrap_or(false);
@@ -107,6 +125,8 @@ impl Config {
             mqtt_client_id,
             http_bind,
             api_token,
+            read_token,
+            energy,
             topic_prefix,
             write_topic_prefix,
             allow_insecure,

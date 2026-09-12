@@ -9,6 +9,20 @@ This is the **read-mostly** remote layer for [inverter-desktop](https://github.c
 the desktop app polls `/v1/snapshot` (and can stream `/v1/events`) through
 Cloudflare Access + a bearer token, instead of talking to Cerbo MQTT on the LAN.
 
+The gateway also provides **`GET /v1/energy`**: normalized battery charge, solar
+power, daily solar yield, explicitly monitored warnings/alarms, per-source freshness,
+and shared English voice reports.
+Alexa can consume it directly through its server adapter; Google Home can use
+Home Assistant as an optional adapter. Energy data and wording are owned here,
+so Home Assistant is not required as the telemetry source. Computation stays on
+the gateway host, with no voice service installed on Cerbo GX.
+
+Read the [energy API contract and setup guide](docs/energy-api.md) before selecting
+sources. Solar totals require explicit configuration; unavailable data is never
+converted to zero. Unconfigured or incomplete alarm monitoring never reports an
+all-clear result. Give voice adapters `GATEWAY_READ_TOKEN`, which cannot access
+command routes.
+
 ## How it works
 
 ```mermaid
@@ -16,6 +30,7 @@ flowchart LR
   subgraph Clients
     Desk["inverter-desktop<br/>Remote Gateway"]
     Curl["curl / scripts"]
+    Voice["Voice adapters<br/>Alexa / optional HA for Google"]
   end
 
   subgraph Cloudflare
@@ -36,6 +51,7 @@ flowchart LR
 
   Desk --> Access
   Curl --> Access
+  Voice -->|"GET /v1/energy<br/>Read-only token"| Access
   Access --> Tunnel
   Tunnel -->|"http://127.0.0.1:9150"| GW
   GW --- HTTP
@@ -68,6 +84,7 @@ responsive during broker outages. Commands still pending at shutdown are not per
 | `GET` | `/health` | none | Liveness (returns `mqtt_connected` status) |
 | `GET` | `/v1/snapshot` | **required** | Curated JSON snapshot |
 | `GET` | `/v1/events` | **required** | SSE stream of snapshot updates |
+| `GET` | `/v1/energy` | **required** | Normalized energy metrics and English voice reports |
 | `GET` | `/v1/commands/{name}` | **required** | Returns 404 if command unknown |
 | `POST` | `/v1/commands/{name}` | **required** | Executes whitelisted command |
 
@@ -80,6 +97,9 @@ responsive during broker outages. Commands still pending at shutdown are not per
   the application exits at startup with a clear error. Set
   `GATEWAY_ALLOW_INSECURE=1` only as a local LAN escape hatch — the server
   prints a loud warning on boot.
+* **Optional read token:** `GATEWAY_READ_TOKEN` grants only telemetry reads:
+  `/v1/snapshot`, `/v1/events`, and `/v1/energy`. It must differ from the full API
+  token. Both GET and POST command routes require the full token.
 * Commands are whitelist-only — no raw MQTT passthrough.
 
 ### /health
@@ -132,6 +152,10 @@ cp .env.example .env
 # fill in Cerbo creds and set GATEWAY_API_TOKEN
 # optionally GATEWAY_ALLOW_INSECURE=1 for quick local tests
 
+# Export the environment for bare-metal execution (Cargo does not read .env).
+set -a
+source .env
+set +a
 cargo run --release
 # or
 docker compose -f docker-compose.example.yml --env-file .env up --build
@@ -202,7 +226,7 @@ in that table returns 404.
 
 Cerbo MQTT is very chatty. The gateway:
 
-* stores only leaf paths the desktop mapper needs (drops `settings/+` and other noise);
+* stores only leaf paths the desktop mapper and energy contract need (drops `settings/+` and other noise);
 * updates the in-memory snapshot in place;
 * **does not** clone/broadcast on every MQTT message when no SSE clients are connected;
 * coalesces SSE pushes to at most ~1/s when clients are connected.

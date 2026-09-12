@@ -1,6 +1,6 @@
 [package]
 name = "inverter-gateway"
-version = "0.2.5"
+version = "0.3.0"
 edition = "2021"
 description = "Victron inverter remote gateway — MQTT-to-HTTPS/SSE bridge"
 license = "MIT"
