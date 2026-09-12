@@ -1,0 +1,36 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze Rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@311b4ee155dcdab395044f00946f664bd51ff173
+        with:
+          languages: rust
+          build-mode: none
+      - name: Analyze
+        uses: github/codeql-action/analyze@311b4ee155dcdab395044f00946f664bd51ff173
+        with:
+          category: /language:rust
