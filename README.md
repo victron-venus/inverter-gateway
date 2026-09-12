@@ -94,6 +94,8 @@ Returns `mqtt_connected` reflecting the live MQTT connection state:
 
 ## Configuration
 
+The Cerbo MQTT connection uses plain TCP, normally on port `1883`, over a trusted network. MQTT TLS is not configurable; selecting port `8883` alone does not enable TLS.
+
 | Env var | Default | Description |
 |---|---|---|
 | `MQTT_HOST` | — | Cerbo host (required) |
