@@ -6,3 +6,6 @@ logs/
 **/*.rs.bk
 *.pdb
 .DS_Store
+/release-output/
+__pycache__/
+*.py[cod]

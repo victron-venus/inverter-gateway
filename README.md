@@ -23,6 +23,12 @@ converted to zero. Unconfigured or incomplete alarm monitoring never reports an
 all-clear result. Give voice adapters `GATEWAY_READ_TOKEN`, which cannot access
 command routes.
 
+<!-- ci-release-process:start -->
+## Release process
+
+See the [release strategy](RELEASING.md) for validation, nightly, beta, RC and stable promotion rules, and the [operator runbook](docs/release-workflow.md) for local commands.
+<!-- ci-release-process:end -->
+
 ## How it works
 
 ```mermaid
