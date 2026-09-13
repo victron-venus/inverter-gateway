@@ -32,10 +32,11 @@ import release_versioned as lifecycle
 import test_release_control as legacy_tests
 import version_plan as versions
 import version_receipt as receipt
-from test_release_control import REPO, SHA, FakeGitHub
 
 # The legacy contract suite loads the script through importlib, while lifecycle
 # modules import it normally. Bind the fake to the same exception/module identity.
+REPO = legacy_tests.REPO
+SHA = legacy_tests.SHA
 rc = legacy_tests.rc
 state.rc = rc
 lifecycle.rc = rc
@@ -57,7 +58,7 @@ def policy(profile="final-build"):
     }
 
 
-class LedgerGitHub(FakeGitHub):  # pylint: disable=too-many-instance-attributes
+class LedgerGitHub(legacy_tests.FakeGitHub):  # pylint: disable=too-many-instance-attributes
     """Model GitHub's atomic file update, independently from release mutations."""
 
     def __init__(self):
