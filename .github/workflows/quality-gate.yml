@@ -31,6 +31,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: python3 -m unittest discover -s .github/release-tests -p 'test_*.py' -v
+      - name: Check every committed version field
+        run: python3 scripts/version_plan.py check-base
   gate:
     name: CI gate
     needs:

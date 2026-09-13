@@ -36,8 +36,8 @@ pushes request beta builds through the same validation and build gates. Publicat
 also requires the opt-in variable and an eligible unreleased base version. GitHub can delay
 scheduled runs; schedule timing is not an SLA. A committed base version (`X.Y.Z`)
 is required. Version changes go through PR review, including any native companion
-version files. Native binaries keep that base version; the release manifest records
-the beta/RC/nightly channel and exact source SHA.
+version files. The frozen release plan supplies full candidate versions to declared
+format adapters before compilation; the manifest binds the plan and build receipts.
 
 From a clean checkout matching GitHub's default-branch HEAD:
 
@@ -120,3 +120,9 @@ projects receive the local client, whose contracts run in the toolkit. Update th
 References: [GitHub schedules](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule),
 [protected environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments),
 [artifact provenance](https://docs.github.com/en/rest/actions/artifacts).
+
+## Automatic version preparation
+
+Run `python3 scripts/release.py prepare-version --pr` from the clean default-branch HEAD. The command refreshes tags and opens a PR with synchronized owned version fields. An existing unreleased base is retained; use `--bump minor`, `--bump major`, or `--version X.Y.Z` for explicit intent. See [version plans](VERSIONING.md) for build overlays, the dedicated allocation ledger and recovery.
+
+A local candidate package also needs the saved `.release-plan.json` at its exact source commit. Restore the `version_plan` object from the published `release-manifest.json` into a disposable checkout before `release.py package`; do not invent a tag or native counter locally. Ordinary development builds can use the project's native build command and explicitly local version identity.

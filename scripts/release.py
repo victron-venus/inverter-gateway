@@ -210,6 +210,18 @@ def arguments() -> argparse.Namespace:
     subs.add_parser("doctor", help="Read release environment configuration")
     resolve = subs.add_parser("resolve", help=argparse.SUPPRESS)
     resolve.add_argument("--version", default="")
+    prepare = subs.add_parser(
+        "prepare-version", help="Synchronize version files or open a preparation PR"
+    )
+    choice = prepare.add_mutually_exclusive_group()
+    choice.add_argument("--version", default="")
+    choice.add_argument(
+        "--bump",
+        choices=["next-patch", "patch", "minor", "major"],
+        default="next-patch",
+    )
+    prepare.add_argument("--pr", action="store_true")
+    prepare.add_argument("--dry-run", action="store_true")
     collect = subs.add_parser("collect", help=argparse.SUPPRESS)
     collect.add_argument("source", choices=[".release-download"])
     collect.add_argument("destination", choices=[".release-assets"])
@@ -319,6 +331,20 @@ def execute(args: argparse.Namespace, config: dict) -> None:
         package(args, config)
     elif args.command == "resolve":
         print(resolve_version(config, args.version))
+    elif args.command == "prepare-version":
+        if not config.get("versioning"):
+            raise ValueError(
+                "Version preparation requires the versioning policy extension"
+            )
+        # Legacy validation-only clients do not include versioning modules.
+        # pylint: disable-next=import-outside-toplevel
+        from prepare_version import prepare
+
+        print(
+            json.dumps(
+                prepare(ROOT, args.version, args.bump, args.pr, args.dry_run), indent=2
+            )
+        )
     elif args.command == "collect":
         collect_assets()
     elif args.command == "status":

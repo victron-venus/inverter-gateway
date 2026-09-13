@@ -15,6 +15,10 @@ use crate::state::AppState;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("inverter-gateway {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     init_tracing();
 
     let cfg = Config::from_env()?;

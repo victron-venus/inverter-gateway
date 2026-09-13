@@ -9,3 +9,7 @@ logs/
 /release-output/
 __pycache__/
 *.py[cod]
+# Frozen release overlays and final build staging
+.release-plan.json
+.release-inputs.json
+release-assets/
