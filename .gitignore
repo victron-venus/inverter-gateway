@@ -7,3 +7,5 @@ logs/
 *.pdb
 .DS_Store
 /release-output/
+__pycache__/
+*.py[cod]
