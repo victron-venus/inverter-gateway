@@ -366,7 +366,7 @@ mod tests {
     async fn mqtt_tls_handshake(
         server_name: &str,
         trusted: bool,
-    ) -> Result<(), rumqttc::ConnectionError> {
+    ) -> Result<(), Box<rumqttc::ConnectionError>> {
         use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
         use tokio::io::AsyncWriteExt;
 
@@ -419,7 +419,7 @@ mod tests {
                 match eventloop.poll().await {
                     Ok(Event::Incoming(Packet::ConnAck(_))) => return Ok(()),
                     Ok(_) => {}
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(Box::new(error)),
                 }
             }
         };
