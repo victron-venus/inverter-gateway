@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inverter-gateway
+spec:
+  template:
+    spec:
+      containers:
+        - name: inverter-gateway
+          env:
+            - name: HTTPS_BIND
+              value: 0.0.0.0:8443
+            - name: GATEWAY_TLS_CERT_FILE
+              value: /run/secrets/igw-tls/tls.crt
+            - name: GATEWAY_TLS_KEY_FILE
+              value: /run/secrets/igw-tls/tls.key
+          ports:
+            - name: https
+              containerPort: 8443
+              hostPort: 9151
+          volumeMounts:
+            - name: igw-tls
+              mountPath: /run/secrets/igw-tls
+              readOnly: true
+      volumes:
+        - name: igw-tls
+          secret:
+            # Existing cert-manager certificate in this installation's namespace.
+            # Use your own DNS-valid certificate Secret on other installations.
+            secretName: s-wildcard-tls

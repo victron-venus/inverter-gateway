@@ -1,11 +1,13 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS};
+use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS, Transport};
+use rustls::{ClientConfig, RootCertStore};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::config::Config;
+use crate::config::{Config, ConfigError};
 use crate::state::{ParsedUpdate, Shared};
 
 /// Victron GX drops N/ publishes unless clients periodically ping R/<portal>/keepalive.
@@ -21,10 +23,11 @@ pub struct MqttBridge {
 }
 
 impl MqttBridge {
-    pub fn start(state: Arc<crate::state::AppState>, cfg: Config) -> Self {
+    pub fn start(state: Arc<crate::state::AppState>, cfg: Config) -> Result<Self, ConfigError> {
+        // Validate TLS material before spawning the reconnect loop or serving requests.
+        let (client, eventloop) = Self::new_client(&cfg)?;
         let (shutdown_tx, _) = broadcast::channel(1);
         let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (client, eventloop) = Self::new_client(&cfg);
         let shared = state.shared.clone();
 
         // Give the sender to Shared so whitelist::execute can enqueue commands.
@@ -39,19 +42,20 @@ impl MqttBridge {
             command_rx,
         ));
 
-        MqttBridge {
+        Ok(MqttBridge {
             client,
             handle: parking_lot::Mutex::new(Some(handle)),
             shutdown_tx,
             command_tx,
-        }
+        })
     }
 
-    fn new_client(cfg: &Config) -> (AsyncClient, EventLoop) {
+    fn new_client(cfg: &Config) -> Result<(AsyncClient, EventLoop), ConfigError> {
         let mut opts = MqttOptions::new(&cfg.mqtt_client_id, &cfg.mqtt_host, cfg.mqtt_port);
         opts.set_credentials(&cfg.mqtt_username, &cfg.mqtt_password);
         opts.set_keep_alive(Duration::from_secs(30));
-        AsyncClient::new(opts, 256)
+        opts.set_transport(mqtt_transport(cfg.mqtt_tls, cfg.mqtt_ca_file.as_deref())?);
+        Ok(AsyncClient::new(opts, 256))
     }
 
     fn portal_id(prefix: &str) -> Option<&str> {
@@ -239,12 +243,62 @@ impl MqttBridge {
     }
 }
 
+fn mqtt_transport(tls: bool, ca_file: Option<&Path>) -> Result<Transport, ConfigError> {
+    if !tls {
+        if ca_file.is_some() {
+            return Err("MQTT_CA_FILE requires MQTT_TLS=1".into());
+        }
+        return Ok(Transport::Tcp);
+    }
+
+    let roots = if let Some(path) = ca_file {
+        let pem = std::fs::read(path)
+            .map_err(|e| ConfigError::from(format!("cannot read MQTT_CA_FILE: {e}")))?;
+        mqtt_ca_roots(&pem)?
+    } else {
+        let certs = rustls_native_certs::load_native_certs();
+        let mut roots = RootCertStore::empty();
+        roots.add_parsable_certificates(certs.certs);
+        if roots.is_empty() {
+            return Err(
+                "no system CA certificates available for MQTT TLS; set MQTT_CA_FILE".into(),
+            );
+        }
+        roots
+    };
+    Ok(verified_mqtt_tls(roots))
+}
+
+fn mqtt_ca_roots(pem: &[u8]) -> Result<RootCertStore, ConfigError> {
+    let mut roots = RootCertStore::empty();
+    for cert in rustls_pemfile::certs(&mut std::io::Cursor::new(pem)) {
+        let cert = cert.map_err(|e| ConfigError::from(format!("invalid MQTT_CA_FILE PEM: {e}")))?;
+        roots
+            .add(cert)
+            .map_err(|e| ConfigError::from(format!("invalid MQTT_CA_FILE certificate: {e}")))?;
+    }
+    if roots.is_empty() {
+        return Err("MQTT_CA_FILE contains no CA certificates".into());
+    }
+    Ok(roots)
+}
+
+fn verified_mqtt_tls(roots: RootCertStore) -> Transport {
+    // Rustls's standard verifier checks both the trust chain and MQTT_HOST.
+    let config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Transport::tls_with_config(config.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    async fn read_packet(socket: &mut tokio::net::TcpStream) -> std::io::Result<(u8, Vec<u8>)> {
+    async fn read_packet<S: tokio::io::AsyncRead + Unpin>(
+        socket: &mut S,
+    ) -> std::io::Result<(u8, Vec<u8>)> {
         use tokio::io::AsyncReadExt;
         let header = socket.read_u8().await?;
         let mut length = 0;
@@ -260,6 +314,162 @@ mod tests {
         let mut body = vec![0; length];
         socket.read_exact(&mut body).await?;
         Ok((header, body))
+    }
+
+    fn test_cfg(port: u16, ca_file: Option<std::path::PathBuf>) -> Config {
+        Config {
+            mqtt_host: "127.0.0.1".into(),
+            mqtt_port: port,
+            mqtt_tls: true,
+            mqtt_ca_file: ca_file,
+            mqtt_username: "tls-test-user".into(),
+            mqtt_password: "tls-test-password".into(),
+            mqtt_client_id: "tls-test".into(),
+            http_bind: "127.0.0.1:0".parse().unwrap(),
+            https: None,
+            api_token: Some("test-token".into()),
+            read_token: None,
+            energy: Default::default(),
+            topic_prefix: "N/test/".into(),
+            write_topic_prefix: "W/test/".into(),
+            allow_insecure: false,
+            cors_origins: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn mqtt_ca_errors_fail_before_the_reconnect_loop() {
+        let directory = tempfile::tempdir().unwrap();
+        let ca_path = directory.path().join("ca.pem");
+        let cfg = test_cfg(8883, Some(ca_path.clone()));
+        assert!(MqttBridge::new_client(&cfg).is_err());
+        for content in [
+            "",
+            "this is not a certificate",
+            "-----BEGIN CERTIFICATE-----\ninvalid!\n-----END CERTIFICATE-----",
+            "-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----",
+        ] {
+            std::fs::write(&ca_path, content).unwrap();
+            assert!(MqttBridge::new_client(&cfg).is_err());
+        }
+        assert!(mqtt_transport(false, Some(&ca_path)).is_err());
+    }
+
+    #[test]
+    fn mqtt_plain_tcp_remains_explicit_and_compatible() {
+        let mut cfg = test_cfg(1883, None);
+        cfg.mqtt_tls = false;
+        let (_, eventloop) = MqttBridge::new_client(&cfg).unwrap();
+        assert!(matches!(eventloop.mqtt_options.transport(), Transport::Tcp));
+    }
+
+    async fn mqtt_tls_handshake(
+        server_name: &str,
+        trusted: bool,
+    ) -> Result<(), Box<rumqttc::ConnectionError>> {
+        use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+        use tokio::io::AsyncWriteExt;
+
+        let identity = rcgen::generate_simple_self_signed(vec![server_name.into()]).unwrap();
+        let server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![identity.cert.der().clone()],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.key_pair.serialize_der())),
+            )
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let ca_path = directory.path().join("ca.pem");
+        let ca = if trusted {
+            identity.cert.pem()
+        } else {
+            rcgen::generate_simple_self_signed(vec!["other-ca.example".into()])
+                .unwrap()
+                .cert
+                .pem()
+        };
+        std::fs::write(&ca_path, ca).unwrap();
+        let cfg = test_cfg(listener.local_addr().unwrap().port(), Some(ca_path));
+        let (_client, mut eventloop) = MqttBridge::new_client(&cfg).unwrap();
+        assert!(matches!(
+            eventloop.mqtt_options.transport(),
+            Transport::Tls(_)
+        ));
+
+        let server = async {
+            let (socket, _) = listener.accept().await.unwrap();
+            let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+            let Ok(mut socket) = acceptor.accept(socket).await else {
+                return false;
+            };
+            let (header, body) = read_packet(&mut socket).await.unwrap();
+            assert_eq!(header, 0x10);
+            // The authenticated CONNECT is only readable after verified TLS.
+            for credential in [b"tls-test-user".as_slice(), b"tls-test-password"] {
+                assert!(body
+                    .windows(credential.len())
+                    .any(|window| window == credential));
+            }
+            socket.write_all(&[0x20, 2, 0, 0]).await.unwrap();
+            true
+        };
+        let client = async {
+            loop {
+                match eventloop.poll().await {
+                    Ok(Event::Incoming(Packet::ConnAck(_))) => return Ok(()),
+                    Ok(_) => {}
+                    Err(error) => return Err(Box::new(error)),
+                }
+            }
+        };
+        let (connected, result) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(server, client)
+        })
+        .await
+        .expect("MQTT TLS handshake timed out");
+        assert_eq!(connected, result.is_ok());
+        result
+    }
+
+    fn certificate_error(error: &rumqttc::ConnectionError) -> &rustls::CertificateError {
+        let tls_error = match error {
+            rumqttc::ConnectionError::Tls(rumqttc::TlsError::TLS(error)) => Some(error),
+            rumqttc::ConnectionError::Tls(rumqttc::TlsError::Io(error)) => error
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<rustls::Error>()),
+            _ => None,
+        };
+        match tls_error {
+            Some(rustls::Error::InvalidCertificate(error)) => error,
+            _ => panic!("expected a broker certificate verification failure, got {error:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mqtt_tls_authenticates_over_a_trusted_connection() {
+        mqtt_tls_handshake("127.0.0.1", true).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mqtt_tls_rejects_untrusted_broker_before_connect_credentials() {
+        let error = mqtt_tls_handshake("127.0.0.1", false).await.unwrap_err();
+        assert!(matches!(
+            certificate_error(&error),
+            rustls::CertificateError::UnknownIssuer | rustls::CertificateError::BadSignature
+        ));
+    }
+
+    #[tokio::test]
+    async fn mqtt_tls_rejects_wrong_broker_name_before_connect_credentials() {
+        let error = mqtt_tls_handshake("wrong-broker.example", true)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            certificate_error(&error),
+            rustls::CertificateError::NotValidForName
+                | rustls::CertificateError::NotValidForNameContext { .. }
+        ));
     }
 
     #[tokio::test]

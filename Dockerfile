@@ -20,4 +20,4 @@ RUN adduser -D -g '' appuser
 COPY --from=builder /app/target/release/inverter-gateway /usr/local/bin/inverter-gateway
 USER appuser
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/inverter-gateway"]
-EXPOSE 8080
+EXPOSE 8080 8443

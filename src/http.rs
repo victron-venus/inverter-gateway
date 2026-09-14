@@ -228,7 +228,7 @@ struct CommandResult {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::Config;
 
@@ -236,14 +236,17 @@ mod tests {
         AppState::new(cfg)
     }
 
-    fn cfg_with_token(token: &str) -> Config {
+    pub(crate) fn cfg_with_token(token: &str) -> Config {
         Config {
             mqtt_host: "x".into(),
             mqtt_port: 1883,
+            mqtt_tls: false,
+            mqtt_ca_file: None,
             mqtt_username: "u".into(),
             mqtt_password: "p".into(),
             mqtt_client_id: "c".into(),
             http_bind: "127.0.0.1:0".parse().unwrap(),
+            https: None,
             api_token: Some(token.to_string()),
             read_token: Some("read-secret".into()),
             energy: crate::energy::EnergyConfig::default(),

@@ -20,6 +20,16 @@ HTTPS hostname. Machine clients should send a descriptive `User-Agent`, such as
 
 ## Upgrade
 
+For the staged HTTPS rollout, use `deploy/k3s-https` instead of the base overlay.
+It adds HTTPS port 8443 (host 9151, NodePort 30151) using the existing
+`s-wildcard-tls` Secret, while retaining all HTTP ports and the same authentication.
+Verify that the certificate matches the DNS name clients will use. Preserve the
+live image digest until replacing it with the verified release artifact; the base
+manifest's image is an example, not an instruction to downgrade the running app.
+See [transport security](../../docs/transport-security.md) for MQTT TLS and the
+remaining client redirect migration. Restart after certificate renewal to load the
+new key pair.
+
 1. Save the current Deployment and Secret to a private, mode-600 backup location.
 2. Record the running image digest. Select an immutable release image or digest
    that has passed CI, and update `deployment.yaml` accordingly.
