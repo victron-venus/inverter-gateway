@@ -1,15 +1,21 @@
 use crate::energy::EnergyConfig;
 use std::env;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub mqtt_host: String,
     pub mqtt_port: u16,
+    /// Enable certificate-verified MQTT TLS. Plain TCP remains the compatibility default.
+    pub mqtt_tls: bool,
+    /// PEM CA bundle for a private broker; otherwise use the system trust store.
+    pub mqtt_ca_file: Option<PathBuf>,
     pub mqtt_username: String,
     pub mqtt_password: String,
     pub mqtt_client_id: String,
     pub http_bind: SocketAddr,
+    pub https: Option<crate::transport::HttpsConfig>,
     pub api_token: Option<String>,
     /// Optional credential restricted to telemetry reads.
     pub read_token: Option<String>,
@@ -57,10 +63,11 @@ impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         let mqtt_host =
             env::var("MQTT_HOST").map_err(|_| -> ConfigError { "missing env MQTT_HOST".into() })?;
-        let mqtt_port: u16 = env::var("MQTT_PORT")
-            .unwrap_or_else(|_| "1883".to_string())
-            .parse()
-            .map_err(|_| -> ConfigError { "invalid MQTT_PORT".into() })?;
+        let (mqtt_tls, mqtt_ca_file, mqtt_port) = parse_mqtt_transport(
+            optional_env("MQTT_TLS")?.as_deref(),
+            optional_env("MQTT_CA_FILE")?.as_deref(),
+            optional_env("MQTT_PORT")?.as_deref(),
+        )?;
         let mqtt_username = env::var("MQTT_USERNAME")
             .map_err(|_| -> ConfigError { "missing env MQTT_USERNAME".into() })?;
         let mqtt_password = env::var("MQTT_PASSWORD")
@@ -72,6 +79,7 @@ impl Config {
             .unwrap_or_else(|_| "127.0.0.1:8080".to_string())
             .parse()
             .map_err(|_| -> ConfigError { "invalid HTTP_BIND".into() })?;
+        let https = crate::transport::HttpsConfig::from_env(http_bind)?;
 
         let api_token = env::var("GATEWAY_API_TOKEN").ok().filter(|s| !s.is_empty());
         let read_token = env::var("GATEWAY_READ_TOKEN")
@@ -120,10 +128,13 @@ impl Config {
         Ok(Config {
             mqtt_host,
             mqtt_port,
+            mqtt_tls,
+            mqtt_ca_file,
             mqtt_username,
             mqtt_password,
             mqtt_client_id,
             http_bind,
+            https,
             api_token,
             read_token,
             energy,
@@ -133,6 +144,42 @@ impl Config {
             cors_origins,
         })
     }
+}
+
+/// Distinguish an absent setting from invalid text so TLS cannot silently turn off.
+pub(crate) fn optional_env(name: &str) -> Result<Option<String>, ConfigError> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(format!("{name} must contain valid UTF-8").into()),
+    }
+}
+
+fn parse_mqtt_transport(
+    tls: Option<&str>,
+    ca_file: Option<&str>,
+    port: Option<&str>,
+) -> Result<(bool, Option<PathBuf>, u16), ConfigError> {
+    let tls = match tls {
+        None | Some("0" | "false") => false,
+        Some("1" | "true") => true,
+        _ => return Err("MQTT_TLS must be 0, 1, false, or true".into()),
+    };
+    let ca_file = match ca_file {
+        Some(_) if !tls => return Err("MQTT_CA_FILE requires MQTT_TLS=1".into()),
+        Some(path) if path.trim().is_empty() => {
+            return Err("MQTT_CA_FILE must not be empty".into());
+        }
+        Some(path) => Some(PathBuf::from(path)),
+        None => None,
+    };
+    let port = port
+        .unwrap_or(if tls { "8883" } else { "1883" })
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or_else(|| ConfigError::from("invalid MQTT_PORT: expected 1 through 65535"))?;
+    Ok((tls, ca_file, port))
 }
 
 #[cfg(test)]
@@ -158,5 +205,48 @@ mod tests {
             .map(String::from)
             .collect();
         assert_eq!(v, vec!["https://a.example", "https://b.example"]);
+    }
+
+    #[test]
+    fn mqtt_transport_defaults_preserve_tcp_and_use_standard_tls_port() {
+        assert_eq!(
+            parse_mqtt_transport(None, None, None).unwrap(),
+            (false, None, 1883)
+        );
+        for value in ["0", "false"] {
+            assert_eq!(
+                parse_mqtt_transport(Some(value), None, None).unwrap(),
+                (false, None, 1883)
+            );
+        }
+        for value in ["1", "true"] {
+            assert_eq!(
+                parse_mqtt_transport(Some(value), None, None).unwrap(),
+                (true, None, 8883)
+            );
+        }
+        assert_eq!(
+            parse_mqtt_transport(Some("1"), Some("/etc/mqtt/ca.pem"), Some("28883")).unwrap(),
+            (true, Some(PathBuf::from("/etc/mqtt/ca.pem")), 28883)
+        );
+        assert_eq!(
+            parse_mqtt_transport(None, None, Some("1884")).unwrap().2,
+            1884
+        );
+    }
+
+    #[test]
+    fn mqtt_transport_rejects_misconfigured_tls_instead_of_silently_using_tcp() {
+        for value in ["", "yes", "TRUE", "2", " true"] {
+            assert!(parse_mqtt_transport(Some(value), None, None).is_err());
+        }
+        assert!(parse_mqtt_transport(None, Some("ca.pem"), None).is_err());
+        assert!(parse_mqtt_transport(Some("0"), Some("ca.pem"), None).is_err());
+        for value in ["", " "] {
+            assert!(parse_mqtt_transport(Some("1"), Some(value), None).is_err());
+        }
+        for value in ["", "0", "65536", "tls", "-1"] {
+            assert!(parse_mqtt_transport(Some("1"), None, Some(value)).is_err());
+        }
     }
 }

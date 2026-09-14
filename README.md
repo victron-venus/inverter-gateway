@@ -120,18 +120,27 @@ Returns `mqtt_connected` reflecting the live MQTT connection state:
 
 ## Configuration
 
-The Cerbo MQTT connection uses plain TCP, normally on port `1883`, over a trusted network. MQTT TLS is not configurable; selecting port `8883` alone does not enable TLS.
+HTTP remains available for existing installations. Enable native HTTPS alongside it with `HTTPS_BIND`, `GATEWAY_TLS_CERT_FILE`, and `GATEWAY_TLS_KEY_FILE`. Both listeners share the same bearer authorization, telemetry, SSE, and command allowlist. IGW does not redirect HTTP requests to HTTPS during migration.
+
+MQTT keeps its existing TCP default on port `1883`. Set `MQTT_TLS=1` to verify the broker certificate and hostname using system roots or `MQTT_CA_FILE`; with `MQTT_PORT` unset, TLS defaults to `8883`. Selecting port `8883` alone does not enable TLS. There is no certificate-verification bypass or fallback to TCP after TLS failure.
+
+See [transport security and the staged migration](docs/transport-security.md) for deployment, certificate requirements, and the client redirect policy. The gateway server does not make outbound HTTP requests or forward Cloudflare Access credentials; redirect restrictions must also be implemented in each client.
 
 | Env var | Default | Description |
 |---|---|---|
 | `MQTT_HOST` | — | Cerbo host (required) |
 | `MQTT_PORT` | `1883` | Cerbo MQTT port |
+| `MQTT_TLS` | `0` | Enable verified TLS with `1`/`true`; default port becomes `8883` when `MQTT_PORT` is unset |
+| `MQTT_CA_FILE` | system roots | Optional PEM trust anchor file; requires `MQTT_TLS=1` |
 | `MQTT_USERNAME` | — | Victron MQTT user |
 | `MQTT_PASSWORD` | — | Victron MQTT password |
 | `MQTT_CLIENT_ID` | `inverter-gateway` | MQTT client id |
 | `VICTRON_PORTAL_ID` | — | Portal id → builds `N/<portal_id>/` prefix automatically |
 | `VICTRON_TOPIC_PREFIX` | `N/<portal_id>/` | Victron topic prefix. **Replace with your real portal id.** |
 | `HTTP_BIND` | `127.0.0.1:8080` | App bind. Docker compose overrides to `0.0.0.0:8080` inside the container; host publish is `127.0.0.1:9150:8080` |
+| `HTTPS_BIND` | disabled | Optional HTTPS socket, e.g. `0.0.0.0:8443`; requires both TLS files |
+| `GATEWAY_TLS_CERT_FILE` | unset | PEM server certificate chain for HTTPS |
+| `GATEWAY_TLS_KEY_FILE` | unset | PEM private key for HTTPS; mount read-only |
 | `GATEWAY_API_TOKEN` | — | Bearer token (required; set `GATEWAY_ALLOW_INSECURE=1` for local tests) |
 | `GATEWAY_ALLOW_INSECURE` | `0` | Set `1` to skip token check (local LAN only) |
 | `GATEWAY_CORS_ORIGINS` | (none) | Comma-separated allowed origins; empty = same-origin only |

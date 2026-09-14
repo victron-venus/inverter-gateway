@@ -1,5 +1,5 @@
 use tokio::signal;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 mod alarms;
 mod config;
@@ -7,6 +7,7 @@ mod energy;
 mod http;
 mod mqtt_bridge;
 mod state;
+mod transport;
 mod whitelist;
 
 use crate::config::Config;
@@ -29,23 +30,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     info!(bind = %cfg.http_bind, mqtt = %cfg.mqtt_host, "starting inverter-gateway");
 
+    let listeners = transport::Listeners::bind(cfg.http_bind, cfg.https.as_ref()).await?;
     let state = AppState::new(cfg.clone());
     state.shared.start_sse_coalesce();
-    let mqtt = MqttBridge::start(state.clone(), cfg.clone());
+    let mqtt = MqttBridge::start(state.clone(), cfg.clone())?;
 
     let app = http::router(state.clone());
-    let listener = tokio::net::TcpListener::bind(&cfg.http_bind).await?;
-    let local = listener.local_addr()?;
-    info!(addr = %local, "http listening");
-
-    let server =
-        axum::serve(listener, app.into_make_service()).with_graceful_shutdown(shutdown_signal());
-
-    if let Err(e) = server.await {
-        error!(error = %e, "http server crashed");
-    }
-
+    let result = listeners.serve(app, shutdown_signal()).await;
     mqtt.shutdown().await;
+    result?;
     Ok(())
 }
 
