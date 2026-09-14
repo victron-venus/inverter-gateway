@@ -1057,8 +1057,17 @@ def verify_checkout(root, policy, plan):
         "tag": "v" + plan["base_version"],
     }
     for name, declarations in grouped.items():
+        _relative(name)
         original = subprocess.check_output(
-            ["git", "-C", str(root), "show", f"{head}:{name}"]
+            [
+                "git",
+                "-C",
+                str(root),
+                "cat-file",
+                "--filters",
+                f"--path={name}",
+                f"{head}:{name}",
+            ]
         )
         expected = original
         for item in declarations:
@@ -1164,11 +1173,16 @@ def _oci_metadata(path, field, expected):  # pylint: disable=too-many-locals,too
         "application/vnd.oci.image.manifest.v1+json",
         "application/vnd.docker.distribution.manifest.v2+json",
     }
+    oci_manifest_type = "application/vnd.oci.image.manifest.v1+json"
     config_types = {
         "application/vnd.oci.image.config.v1+json",
         "application/vnd.docker.container.image.v1+json",
     }
+    attestation_type = "application/vnd.docker.attestation.manifest.v1+json"
+    empty_config_type = "application/vnd.oci.empty.v1+json"
+    empty_config_digest = "sha256:" + digest(b"{}")
     images, verified = [], set()
+    runnable_manifests, attestation_subjects, legacy_references = {}, [], []
     visited, metadata_bytes = 0, 0
     with tarfile.open(path, mode="r:*") as archive:
         members = {}
@@ -1224,7 +1238,14 @@ def _oci_metadata(path, field, expected):  # pylint: disable=too-many-locals,too
             require(isinstance(data, dict), "OCI metadata must be an object")
             return data
 
-        def walk(descriptor, depth=0):  # pylint: disable=too-many-branches,too-many-locals
+        def descriptor_key(descriptor):
+            return (
+                descriptor.get("mediaType"),
+                descriptor.get("digest"),
+                descriptor.get("size"),
+            )
+
+        def walk(descriptor, depth=0):  # pylint: disable=too-many-branches,too-many-locals,too-many-statements
             nonlocal visited
             visited += 1
             require(depth <= 8 and visited <= 1024, "OCI metadata graph exceeds limits")
@@ -1239,25 +1260,85 @@ def _oci_metadata(path, field, expected):  # pylint: disable=too-many-locals,too
             require(isinstance(platform, dict), "Invalid OCI platform descriptor")
             annotations = descriptor.get("annotations") or {}
             require(isinstance(annotations, dict), "Invalid OCI annotations")
-            if annotations.get("vnd.docker.reference.type") == "attestation-manifest":
+            reference_type = annotations.get("vnd.docker.reference.type")
+            artifact_type = data.get("artifactType")
+            if (
+                reference_type == "attestation-manifest"
+                or artifact_type == attestation_type
+            ):
                 require(
                     media in manifest_types
                     and platform.get("os") == "unknown"
-                    and platform.get("architecture") == "unknown",
+                    and platform.get("architecture") == "unknown"
+                    and reference_type in {None, "attestation-manifest"},
                     "Ambiguous OCI attestation descriptor",
                 )
                 attest_config = data.get("config")
-                require(
-                    isinstance(attest_config, dict)
-                    and attest_config.get("mediaType") in config_types,
-                    "Invalid OCI attestation config",
-                )
-                attest_details = blob(attest_config)
-                require(
-                    attest_details.get("os") == "unknown"
-                    and attest_details.get("architecture") == "unknown",
-                    "OCI attestation contains a runnable image",
-                )
+                reference_digest = annotations.get("vnd.docker.reference.digest")
+                if reference_digest is not None:
+                    require(
+                        isinstance(reference_digest, str)
+                        and re.fullmatch(r"sha256:[0-9a-f]{64}", reference_digest),
+                        "Invalid OCI attestation reference digest",
+                    )
+                if artifact_type is not None:
+                    require(
+                        artifact_type == attestation_type
+                        and media == oci_manifest_type
+                        and descriptor.get("artifactType") in {None, attestation_type},
+                        "Invalid OCI attestation artifact type",
+                    )
+                    require(
+                        isinstance(attest_config, dict)
+                        and attest_config.get("mediaType") == empty_config_type
+                        and attest_config.get("digest") == empty_config_digest
+                        and attest_config.get("size") == 2
+                        and (
+                            "data" not in attest_config
+                            or attest_config.get("data") == "e30="
+                        ),
+                        "Invalid OCI attestation config",
+                    )
+                    require(
+                        blob(attest_config) == {},
+                        "Invalid OCI attestation config contents",
+                    )
+                    subject = data.get("subject")
+                    require(
+                        isinstance(subject, dict)
+                        and subject.get("mediaType") == oci_manifest_type
+                        and "artifactType" not in subject,
+                        "Invalid OCI attestation subject",
+                    )
+                    blob(subject, metadata=False)
+                    subject_platform = subject.get("platform")
+                    require(
+                        subject_platform is None or isinstance(subject_platform, dict),
+                        "Invalid OCI attestation subject platform",
+                    )
+                    require(
+                        reference_digest is None
+                        or reference_digest == subject.get("digest"),
+                        "OCI attestation reference differs from subject",
+                    )
+                    attestation_subjects.append(
+                        (descriptor_key(subject), subject_platform)
+                    )
+                else:
+                    require(
+                        descriptor.get("artifactType") is None
+                        and isinstance(attest_config, dict)
+                        and attest_config.get("mediaType") in config_types,
+                        "Invalid OCI attestation config",
+                    )
+                    attest_details = blob(attest_config)
+                    require(
+                        attest_details.get("os") == "unknown"
+                        and attest_details.get("architecture") == "unknown",
+                        "OCI attestation contains a runnable image",
+                    )
+                    if reference_digest is not None:
+                        legacy_references.append(reference_digest)
                 attest_layers = data.get("layers")
                 require(
                     isinstance(attest_layers, list) and 0 < len(attest_layers) <= 4096,
@@ -1309,6 +1390,10 @@ def _oci_metadata(path, field, expected):  # pylint: disable=too-many-locals,too
             )
             for layer in layers:
                 blob(layer, metadata=False)
+            runnable_manifests[descriptor_key(descriptor)] = {
+                "os": details["os"],
+                "architecture": details["architecture"],
+            }
             images.append(
                 {
                     "config_sha256": config["digest"][7:],
@@ -1339,6 +1424,24 @@ def _oci_metadata(path, field, expected):  # pylint: disable=too-many-locals,too
         )
         for descriptor in manifests:
             walk(descriptor)
+        for subject, subject_platform in attestation_subjects:
+            target = runnable_manifests.get(subject)
+            require(
+                target is not None, "OCI attestation subject is not a runnable image"
+            )
+            if subject_platform is not None:
+                for key in ("os", "architecture"):
+                    require(
+                        key not in subject_platform
+                        or subject_platform[key] == target[key],
+                        "OCI attestation subject platform differs from image",
+                    )
+        runnable_digests = {item[1] for item in runnable_manifests}
+        for reference_digest in legacy_references:
+            require(
+                reference_digest in runnable_digests,
+                "OCI attestation reference is not a runnable image",
+            )
         require(bool(images), "OCI archive has no runnable images")
     return json_bytes(
         {"index_sha256": digest(root_raw), "metadata": sorted(verified)}
