@@ -39,52 +39,37 @@ concurrency:
 jobs:
   prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
     outputs:
       channel: ${{ steps.metadata.outputs.channel }}
       version: ${{ steps.metadata.outputs.version }}
+      build: ${{ steps.metadata.outputs.build }}
+      plan_artifact: ${{ steps.metadata.outputs.plan_artifact }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           fetch-depth: 0
       - id: metadata
-        run: |
-          python3 - <<'PY'
-          import json, os, subprocess
-          event = json.load(open(os.environ['GITHUB_EVENT_PATH']))
-          default = event['repository']['default_branch']
-          if os.environ['GITHUB_REF'] != 'refs/heads/' + default:
-              raise SystemExit('Release pipeline must run from the default branch')
-          inputs = event.get('inputs') or {}
-          if inputs.get('expected_sha') and inputs['expected_sha'] != os.environ['GITHUB_SHA']:
-              raise SystemExit('Default branch changed since the local release request; refresh and retry')
-          kind = os.environ['GITHUB_EVENT_NAME']
-          channel = 'nightly' if kind == 'schedule' else ('beta' if kind == 'push' else inputs.get('channel', ''))
-          if channel not in {'nightly', 'beta', 'rc', 'stable'}:
-              raise SystemExit('Invalid release channel')
-          if kind == 'workflow_dispatch' and channel != 'nightly' and os.environ.get('PUBLICATION_ENABLED') != 'true':
-              raise SystemExit('Enable RELEASE_CHANNELS_ENABLED only after release protections and deployment hooks are migrated')
-          config = json.load(open('.release-policy.json'))
-          if config.get('mode', 'release') != 'release':
-              raise SystemExit('This repository policy does not permit releases')
-          if config.get('release_blockers'):
-              raise SystemExit('Release blocked: ' + '; '.join(config['release_blockers']))
-          version = ''
-          if channel != 'stable':
-              version = subprocess.check_output(['python3', 'scripts/release.py', 'resolve', '--version', inputs.get('version', '')], text=True).strip()
-          elif kind != 'workflow_dispatch':
-              raise SystemExit('Stable requires manual workflow_dispatch')
-          if channel in {'rc', 'stable'} and config.get('stable_blockers'):
-              raise SystemExit('Stable blocked: ' + '; '.join(config['stable_blockers']))
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f'channel={channel}\nversion={version}\n')
-          PY
+        run: python3 scripts/release_versioned.py prepare --repo "$GITHUB_REPOSITORY"
         env:
           PUBLICATION_ENABLED: ${{ vars.RELEASE_CHANNELS_ENABLED }}
+          GH_TOKEN: ${{ github.token }}
+      - name: Store exact version plan before building
+        if: ${{ steps.metadata.outputs.build == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.metadata.outputs.plan_artifact }}
+          path: .release-plan.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+    permissions:
+      contents: write
+      actions: read
   checks:
     needs: prepare
-    if: ${{ needs.prepare.outputs.channel != 'stable' }}
+    if: ${{ needs.prepare.outputs.build == 'true' }}
     uses: ./.github/workflows/quality-gate.yml
     permissions:
       contents: read
@@ -94,21 +79,23 @@ jobs:
     needs:
       - prepare
       - checks
-    if: ${{ needs.prepare.outputs.channel != 'stable' }}
+    if: ${{ needs.prepare.outputs.build == 'true' }}
     uses: ./.github/workflows/release-build.yml
     permissions:
       contents: read
+      actions: read
     secrets: inherit
     with:
       version: ${{ needs.prepare.outputs.version }}
       channel: ${{ needs.prepare.outputs.channel }}
+      release_plan_artifact: ${{ needs.prepare.outputs.plan_artifact }}
   gate:
     name: Release gate
     needs:
       - prepare
       - checks
       - build
-    if: ${{ always() && needs.prepare.outputs.channel != 'stable' }}
+    if: ${{ always() && needs.prepare.outputs.build == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -137,6 +124,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Download the plan used by every build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ${{ needs.prepare.outputs.plan_artifact }}
+          path: .
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           pattern: release-assets*
@@ -148,9 +140,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CHANNEL: ${{ needs.prepare.outputs.channel }}
           VERSION: ${{ needs.prepare.outputs.version }}
-        run: python3 scripts/release_control.py candidate --repo "$GITHUB_REPOSITORY" --channel "$CHANNEL" --version
-          "$VERSION" --sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --assets
-          .release-assets
+        run: python3 scripts/release_versioned.py publish --repo "$GITHUB_REPOSITORY" --assets .release-assets
       - name: Store immutable promotion evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -161,7 +151,7 @@ jobs:
           retention-days: 90
   stable:
     needs: prepare
-    if: ${{ needs.prepare.outputs.channel == 'stable' }}
+    if: ${{ needs.prepare.outputs.channel == 'stable' && needs.prepare.outputs.build == 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release
@@ -175,3 +165,43 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RC_TAG: ${{ inputs.rc_tag }}
         run: python3 scripts/release_control.py promote --repo "$GITHUB_REPOSITORY" --rc "$RC_TAG" --run-id "$GITHUB_RUN_ID"
+  final:
+    needs:
+      - prepare
+      - gate
+    if: ${{ needs.prepare.outputs.channel == 'stable' && needs.prepare.outputs.build == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Download the plan used by every build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ${{ needs.prepare.outputs.plan_artifact }}
+          path: .
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: release-assets*
+          path: .release-download
+          merge-multiple: false
+      - run: python3 scripts/release.py collect .release-download .release-assets
+      - name: Publish the separately validated final packages after approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: python3 scripts/release_versioned.py publish --repo "$GITHUB_REPOSITORY" --assets .release-assets
+      - name: Store immutable promotion evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-evidence
+          path: .release-evidence/release-manifest.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+    environment: release

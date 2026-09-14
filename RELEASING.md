@@ -4,7 +4,9 @@
 This document defines the release policy for **victron-venus/inverter-gateway**. The
 [release runbook](docs/release-workflow.md) contains commands, prerequisites and
 recovery steps. The [machine-readable policy](.release-policy.json) declares the
-actual validation workflows, version source and project-specific blockers.
+actual validation workflows, version source and project-specific blockers. The
+[canonical application runbook](https://github.com/victron-venus/venus-os-ci-toolkit/blob/main/docs/APPLICATION_RELEASES.md)
+covers shared queue behavior and recovery after workflow changes.
 
 **Release readiness:** channels are implemented; activation and every required gate must pass before publication.
 
@@ -18,6 +20,8 @@ not publish stable releases. Every repository versions and releases independentl
 The committed base version comes from `Cargo.toml`. A release preparation PR
 updates that version and any required native/package companion versions together.
 Version numbers are explicit; a commit message does not automatically select one.
+
+Use `python3 scripts/release.py prepare-version --pr` to synchronize the declared source fields. A saved release plan fixes the full candidate version before compilation. See [version plans](docs/VERSIONING.md) for adapters, counters, retries and provenance.
 
 Use [Semantic Versioning](https://semver.org/): patch for compatible fixes, minor
 for compatible functionality and major for incompatible changes. State changes to
@@ -43,8 +47,7 @@ The `v` prefix belongs to the Git tag, not the numeric base version.
 
 Nightly and beta are previews; neither is directly promotable to stable. An RC
 may be requested without a previous beta. Channel order is a workflow policy,
-not a comparison of tag strings. Native binaries/packages retain the committed
-base version; the release tag and manifest identify their channel and source.
+not a comparison of tag strings. Declared adapters map the saved full version to each package format. Native OS fields may retain the numeric base while the application embeds its full identity. RC packages under promote-bytes already use the final base; their original candidate identity remains provenance.
 
 ## Required validation and evidence
 
@@ -60,8 +63,8 @@ base version; the release tag and manifest identify their channel and source.
    qualification at the RC's source revision, retained evidence and every asset.
    Missing or expired evidence requires a new RC.
 
-There is no force-publish, replace-tag or skip-checks option. A later policy edit
-cannot retroactively qualify an older RC. Build artifact retention is declared by
+The release CLI has no force-publish, replace-tag or skip-checks option. A later
+policy edit cannot retroactively qualify an older RC. Build artifact retention is declared by
 each build adapter (currently 14 or 30 days across the fleet);
 published candidate assets are not automatically deleted by this workflow.
 
@@ -86,7 +89,9 @@ Before requesting stable, the maintainer must:
 The current application adapter uses the `release` environment's required reviewer
 on public repositories, where that capability is available without a paid private
 repository security plan. A single maintainer may request and approve a release;
-this is not an independently enforced two-person review policy. Human acceptance
+this is not an independently enforced two-person review policy. Administrative
+bypass allowed by the owner's GitHub environment policy is separate from the CLI
+and does not disable the publisher's provenance checks. Human acceptance
 and release-note quality remain maintainer responsibilities, not inferred CI results.
 
 ## Publication and deployment
@@ -105,8 +110,9 @@ trigger production deployment. See the runbook for this repository's adapters.
 ## Hotfixes, rollback and support
 
 A hotfix follows the same reviewed change, checks, RC acceptance and stable
-promotion path with a new patch version. There is no emergency bypass. The current
-pipeline releases from the default branch only; backport release branches require
+promotion path with a new patch version. The release CLI has no emergency
+skip-checks path. The current pipeline releases from the default branch only;
+backport release branches require
 an explicitly reviewed extension of the policy and are not implicitly supported.
 
 For rollback, redeploy a previously accepted immutable artifact using the project's

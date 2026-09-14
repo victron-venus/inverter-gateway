@@ -5,6 +5,9 @@
 # fmt: off
 """Offline release-contract tests. No test invokes GitHub or mutates a remote."""
 
+# Keep the shared GitHub fake and its vendored release-contract regressions together.
+# pylint: disable=too-many-lines
+
 import argparse
 import base64
 import importlib.util
@@ -18,7 +21,7 @@ import zipfile
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SPEC = importlib.util.spec_from_file_location(
     "release_control", Path(__file__).parents[2] / "scripts/release_control.py"
@@ -829,6 +832,86 @@ class TransportTests(unittest.TestCase):
 
 class OfflineValidationTests(unittest.TestCase):
     """Check parsing, staging and REST contracts without network access."""
+
+    def test_restricted_suffixes_reject_every_asset_before_staging_copies(self):
+        """Do not partially stage allowed files before finding a retired package."""
+        restrictions = (
+            {
+                "suffixes": [".apk", ".aab"],
+                "reason": "Android APK/AAB publication moved to another repository",
+            },
+        )
+        for suffix in (".apk", ".APK", ".aab", ".AaB"):
+            with (
+                self.subTest(suffix=suffix),
+                tempfile.TemporaryDirectory() as temp,
+                patch.object(rc, "ASSET_RESTRICTIONS", restrictions),
+            ):
+                source, output = Path(temp) / "source", Path(temp) / "output"
+                source.mkdir()
+                output.mkdir()
+                (source / "first.zip").write_bytes(b"allowed package")
+                (source / ("retired" + suffix)).write_bytes(b"retired package")
+                with self.assertRaisesRegex(
+                    rc.ReleaseError, "APK/AAB publication moved"
+                ):
+                    rc.stage_assets(source, output)
+                self.assertEqual(list(output.iterdir()), [])
+
+    def test_retired_rc_payload_is_rejected_before_any_publication_client_call(self):
+        """The current guard applies when promoting bytes from an older RC."""
+        restrictions = (
+            {"suffixes": [".apk", ".aab"], "reason": "APK/AAB publication moved"},
+        )
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.object(rc, "ASSET_RESTRICTIONS", restrictions),
+        ):
+            stage = Path(temp)
+            (stage / "retired.APK").write_bytes(b"previously verified RC payload")
+            gh = Mock(spec_set=[])
+            with self.assertRaisesRegex(rc.ReleaseError, "APK/AAB publication moved"):
+                rc.publish(gh, "v1.2.3", SHA, stage, False, "")
+            self.assertEqual(gh.mock_calls, [])
+
+    def test_restrictions_leave_unrelated_suffixes_and_payload_bytes_unchanged(self):
+        """Match literal filename endings rather than substrings or package content."""
+        payloads = {
+            "app.ipa": b"ios",
+            "app.dmg": b"mac",
+            "app.exe": b"windows",
+            "app.tar.gz": b"web",
+            "app.apk.zip": b"archive",
+        }
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.object(
+                rc,
+                "ASSET_RESTRICTIONS",
+                ({"suffixes": [".apk", ".aab"], "reason": "Retired Android package"},),
+            ),
+        ):
+            source, output = Path(temp) / "source", Path(temp) / "output"
+            source.mkdir()
+            output.mkdir()
+            for name, data in payloads.items():
+                (source / name).write_bytes(data)
+            assets = rc.stage_assets(source, output)
+            self.assertEqual({item["name"] for item in assets}, set(payloads))
+            for name, data in payloads.items():
+                self.assertEqual((output / name).read_bytes(), data)
+
+    def test_unconfigured_repository_can_still_stage_android_packages(self):
+        """A retirement rule applies only to the repository declaring it."""
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.object(rc, "ASSET_RESTRICTIONS", ()),
+        ):
+            source, output = Path(temp) / "source", Path(temp) / "output"
+            source.mkdir()
+            output.mkdir()
+            (source / "app.apk").write_bytes(b"native Android app")
+            self.assertEqual(rc.stage_assets(source, output)[0]["name"], "app.apk")
 
     def test_actions_zip_uses_default_accept_and_release_assets_use_binary_accept(self):
         """Actions zip uses default accept and release assets use binary accept."""

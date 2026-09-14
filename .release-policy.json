@@ -20,5 +20,43 @@
   "repository": "victron-venus/inverter-gateway",
   "mode": "release",
   "default_branch": "main",
-  "visibility": "public"
+  "visibility": "public",
+  "versioning": {
+    "schema": 1,
+    "promotion": "promote-bytes",
+    "files": [
+      {
+        "path": "Cargo.toml",
+        "format": "toml",
+        "value": "package",
+        "field": "package.version"
+      },
+      {
+        "path": "Cargo.lock",
+        "format": "cargo-lock",
+        "value": "package",
+        "package": "inverter-gateway"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "inverter-gateway-*.tar.gz",
+        "format": "tar-json",
+        "value": "package",
+        "member": "build-info.json",
+        "field": "version"
+      },
+      {
+        "path": "inverter-gateway-container.oci.tar",
+        "format": "oci",
+        "field": [
+          "config",
+          "Labels",
+          "org.opencontainers.image.version"
+        ],
+        "value": "package"
+      }
+    ],
+    "toolkit_revision": "5671b9a05817576a8ae6bd69cacfb3202c60ad0a"
+  }
 }

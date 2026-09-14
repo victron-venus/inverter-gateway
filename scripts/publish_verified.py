@@ -61,7 +61,9 @@ def verified_assets(gh, tag, directory):
     require(len(manifests) == 1, "Stable release has no unambiguous RC manifest")
     raw = gh.binary(f"releases/assets/{manifests[0]['id']}")
     candidate = json.loads(raw)
-    manifest = validate_manifest(raw, gh.repo, candidate.get("tag", ""))
+    manifest = validate_manifest(
+        raw, gh.repo, candidate.get("tag", ""), allow_final=True
+    )
     original_policy = source_policy_snapshot(gh, manifest["source_sha"])
     require_release_policy(original_policy["data"], gh.repo, qualified=True)
     require(
@@ -85,6 +87,16 @@ def verified_assets(gh, tag, directory):
         gh, run, info, manifest["source_sha"], manifest["run_attempt"], completed=True
     )
     verify_evidence(gh, manifest, raw)
+    if manifest["channel"] == "stable":
+        # Legacy consumers do not vendor optional versioning modules.
+        # pylint: disable-next=import-outside-toplevel
+        from release_versioned import verified_rc
+
+        _, parent = verified_rc(gh, manifest["derived_from_rc"]["tag"], info, run)
+        require(
+            parent == manifest["derived_from_rc"],
+            "Final package RC provenance mismatch",
+        )
     expected = {item["name"]: item for item in manifest["assets"]}
     require(
         len(assets) == len(expected) + 1
@@ -103,6 +115,19 @@ def verified_assets(gh, tag, directory):
             f"Stable payload changed: {asset['name']}",
         )
         (directory / asset["name"]).write_bytes(content)
+    if manifest.get("version_plan"):
+        # pylint: disable-next=import-outside-toplevel
+        from version_receipt import verify_declared_artifacts, verify_receipts
+
+        verify_receipts(
+            directory,
+            manifest["version_plan"],
+            manifest["assets"],
+            original_policy["data"],
+        )
+        verify_declared_artifacts(
+            directory, original_policy["data"], manifest["version_plan"]
+        )
     return manifest
 
 
