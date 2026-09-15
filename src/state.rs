@@ -189,6 +189,17 @@ impl Shared {
 
     pub(crate) fn broadcast_snapshot(&self) {
         let mut telemetry = self.telemetry.write();
+        // Expiry is itself a state change, even when every MQTT publisher is
+        // silent. Existing SSE clients must receive the unavailable state.
+        if telemetry.snapshot.inverter.is_some()
+            && telemetry
+                .inverter_received_at
+                .is_none_or(|at| at.elapsed() > Duration::from_secs(120))
+        {
+            telemetry.snapshot.inverter = None;
+            telemetry.inverter_received_at = None;
+            telemetry.dirty = self.sse_tx.receiver_count() > 0;
+        }
         if !telemetry.connected || !telemetry.dirty {
             return;
         }
@@ -575,6 +586,29 @@ mod tests {
             snap.platform.get("0/Notifications/3/Description"),
             Some(&json!("High cell voltage"))
         );
+    }
+
+    #[test]
+    fn controller_expiry_notifies_idle_sse_clients_once() {
+        let shared = Shared::new();
+        shared.set_connected(true);
+        shared.update_inverter(json!({"booleans": {"only_charging": true}}));
+        let (_, mut events) = shared.subscribe().unwrap();
+        shared.telemetry.write().inverter_received_at =
+            Some(Instant::now() - Duration::from_secs(121));
+        assert!(!shared.telemetry.read().dirty);
+
+        shared.broadcast_snapshot();
+        assert!(events
+            .try_recv()
+            .unwrap()
+            .snapshot
+            .unwrap()
+            .inverter
+            .is_none());
+        assert!(shared.snapshot().unwrap().inverter.is_none());
+        shared.broadcast_snapshot();
+        assert!(events.try_recv().is_err());
     }
 
     #[test]
