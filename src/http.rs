@@ -212,6 +212,8 @@ async fn command_post(
         Err(whitelist::CommandError::PublishFailed(e)) => {
             Err(AppError::Internal(format!("mqtt publish failed: {e}")))
         }
+        Err(whitelist::CommandError::InvalidBody(e)) => Err(AppError::BadRequest(e)),
+        Err(whitelist::CommandError::Unavailable) => Err(AppError::Unavailable),
     }
 }
 
@@ -252,6 +254,7 @@ pub(crate) mod tests {
             energy: crate::energy::EnergyConfig::default(),
             topic_prefix: "N/test/".into(),
             write_topic_prefix: "W/test/".into(),
+            inverter_topic_prefix: "inverter".into(),
             allow_insecure: false,
             cors_origins: vec![],
         }
@@ -261,6 +264,47 @@ pub(crate) mod tests {
         let mut c = cfg_with_token("token");
         c.allow_insecure = true;
         c
+    }
+
+    #[tokio::test]
+    async fn controller_commands_require_write_auth_and_validate_before_queueing() {
+        let state = make_state(cfg_with_token("write-secret"));
+        state.shared.set_connected(true);
+        state
+            .shared
+            .update_inverter(serde_json::json!({"booleans":{"only_charging":false}}));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        *state.shared.command_tx.lock() = Some(tx);
+        let mut headers = HeaderMap::new();
+        headers.insert("Authorization", "Bearer read-secret".parse().unwrap());
+        let payload = serde_json::json!({"entity":"only_charging","state":"on"});
+        assert!(matches!(
+            command_post(
+                State(state.clone()),
+                Path("toggle".into()),
+                headers.clone(),
+                Json(payload.clone())
+            )
+            .await,
+            Err(AppError::Unauthorized)
+        ));
+        assert!(rx.try_recv().is_err());
+        headers.insert("Authorization", "Bearer write-secret".parse().unwrap());
+        assert!(matches!(
+            command_post(
+                State(state.clone()),
+                Path("toggle".into()),
+                headers.clone(),
+                Json(serde_json::json!({"entity":"switch.no_feed","state":"on"}))
+            )
+            .await,
+            Err(AppError::BadRequest(_))
+        ));
+        assert!(rx.try_recv().is_err());
+        let result =
+            command_post(State(state), Path("toggle".into()), headers, Json(payload)).await;
+        assert!(result.is_ok());
+        assert_eq!(rx.try_recv().unwrap().0, "inverter/cmd/toggle");
     }
 
     #[test]
@@ -418,7 +462,7 @@ pub(crate) mod tests {
         let data = frame.strip_prefix("data: ").unwrap().trim();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(data).unwrap(),
-            serde_json::json!({"battery": {"0/Dc/0/Voltage": 49}})
+            serde_json::json!({"inverter": null, "battery": {"0/Dc/0/Voltage": 49}})
         );
         state.shared.set_connected(false);
         assert!(

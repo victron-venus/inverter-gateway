@@ -26,6 +26,8 @@ pub struct Config {
     /// Victron MQTT topic prefix for writing, e.g. "W/<portal_id>/"
     /// Derived from topic_prefix (N/ → W/).
     pub write_topic_prefix: String,
+    /// Topic root owned by inverter-control, independent of the Victron portal.
+    pub inverter_topic_prefix: String,
     /// Allow unauthenticated access (escape hatch for local LAN tests only).
     pub allow_insecure: bool,
     /// Allowed CORS origins (empty = same-origin only).
@@ -114,6 +116,16 @@ impl Config {
 
         // Write prefix: Victron requires W/ not N/ for command publications.
         let write_topic_prefix = topic_prefix.replace("N/", "W/");
+        let inverter_topic_prefix = env::var("INVERTER_TOPIC_PREFIX")
+            .unwrap_or_else(|_| "inverter".into())
+            .trim_end_matches('/')
+            .to_string();
+        if inverter_topic_prefix.is_empty()
+            || inverter_topic_prefix.contains(['+', '#', '\0'])
+            || inverter_topic_prefix.starts_with('/')
+        {
+            return Err("INVERTER_TOPIC_PREFIX must be a nonempty literal MQTT topic root".into());
+        }
 
         let cors_origins = env::var("GATEWAY_CORS_ORIGINS")
             .map(|s| {
@@ -140,6 +152,7 @@ impl Config {
             energy,
             topic_prefix,
             write_topic_prefix,
+            inverter_topic_prefix,
             allow_insecure,
             cors_origins,
         })

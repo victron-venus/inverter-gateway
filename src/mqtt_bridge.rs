@@ -37,6 +37,7 @@ impl MqttBridge {
             eventloop,
             shared,
             cfg.topic_prefix.clone(),
+            cfg.inverter_topic_prefix.clone(),
             shutdown_tx.subscribe(),
             client.clone(),
             command_rx,
@@ -54,6 +55,7 @@ impl MqttBridge {
         let mut opts = MqttOptions::new(&cfg.mqtt_client_id, &cfg.mqtt_host, cfg.mqtt_port);
         opts.set_credentials(&cfg.mqtt_username, &cfg.mqtt_password);
         opts.set_keep_alive(Duration::from_secs(30));
+        opts.set_max_packet_size(1024 * 1024, 64 * 1024);
         opts.set_transport(mqtt_transport(cfg.mqtt_tls, cfg.mqtt_ca_file.as_deref())?);
         Ok(AsyncClient::new(opts, 256))
     }
@@ -65,9 +67,9 @@ impl MqttBridge {
             .filter(|s| !s.is_empty() && !s.contains('<'))
     }
 
-    async fn subscribe_portal(client: &AsyncClient, prefix: &str) {
+    async fn subscribe_portal(client: &AsyncClient, prefix: &str, inverter_prefix: &str) {
         // Match desktop: multi-level wildcards under each Victron service.
-        // No settings/+ — thousands of unused leaves; desktop never maps them.
+        // Subscribe only to the two ESS settings, not thousands of unused leaves.
         let filters = [
             "system/+/#",
             "vebus/+/#",
@@ -81,6 +83,8 @@ impl MqttBridge {
             "acload/+/#",
             // GUIv2 / Venus-platform notification slots (AcknowledgeAll target).
             "platform/+/#",
+            "settings/+/Settings/CGwacs/Hub4Mode",
+            "settings/+/Settings/CGwacs/BatteryLife/State",
         ];
         for filter in filters {
             let full = format!("{prefix}{filter}");
@@ -89,12 +93,19 @@ impl MqttBridge {
                 Err(e) => warn!(topic = %full, error = %e, "subscribe failed"),
             }
         }
+        if let Err(e) = client
+            .subscribe(format!("{inverter_prefix}/state"), QoS::AtLeastOnce)
+            .await
+        {
+            warn!(error = %e, "inverter-control subscribe failed");
+        }
     }
 
     async fn run_loop(
         eventloop: EventLoop,
         shared: Arc<Shared>,
         topic_prefix: String,
+        inverter_prefix: String,
         mut shutdown: broadcast::Receiver<()>,
         client: AsyncClient,
         command_rx: tokio::sync::mpsc::UnboundedReceiver<crate::state::CommandRequest>,
@@ -107,8 +118,8 @@ impl MqttBridge {
         // Dropping this select cancels both futures; no worker task is detached.
         tokio::select! {
             _ = shutdown.recv() => info!("mqtt shutdown signal"),
-            _ = Self::poll_events(eventloop, &shared, &topic_prefix, connected_tx) => {},
-            _ = Self::send_requests(&client, &topic_prefix, command_rx, connected_rx) => {},
+            _ = Self::poll_events(eventloop, &shared, &topic_prefix, &inverter_prefix, connected_tx) => {},
+            _ = Self::send_requests(&client, &topic_prefix, &inverter_prefix, command_rx, connected_rx) => {},
         }
         shared.set_connected(false);
         info!("mqtt loop stopped");
@@ -118,11 +129,18 @@ impl MqttBridge {
         mut eventloop: EventLoop,
         shared: &Shared,
         topic_prefix: &str,
+        inverter_prefix: &str,
         connected: tokio::sync::watch::Sender<()>,
     ) {
         loop {
             match eventloop.poll().await {
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
+                    if publish.topic == format!("{inverter_prefix}/state") {
+                        if let Some(value) = Self::parse_inverter(&publish.payload) {
+                            shared.update_inverter(value);
+                        }
+                        continue;
+                    }
                     if let Some(update) =
                         Self::parse(&publish.topic, &publish.payload, topic_prefix)
                     {
@@ -154,6 +172,7 @@ impl MqttBridge {
     async fn send_requests(
         client: &AsyncClient,
         topic_prefix: &str,
+        inverter_prefix: &str,
         mut command_rx: tokio::sync::mpsc::UnboundedReceiver<crate::state::CommandRequest>,
         mut connected: tokio::sync::watch::Receiver<()>,
     ) {
@@ -166,7 +185,7 @@ impl MqttBridge {
                     if changed.is_err() {
                         break;
                     }
-                    Self::subscribe_portal(client, topic_prefix).await;
+                    Self::subscribe_portal(client, topic_prefix, inverter_prefix).await;
                     if let Some(ref topic) = keepalive_topic {
                         let _ = client.publish(topic, QoS::AtMostOnce, false, "").await;
                     }
@@ -181,7 +200,14 @@ impl MqttBridge {
                 cmd = command_rx.recv() => {
                     if let Some((topic, payload)) = cmd {
                         debug!(topic = %topic, "publishing command");
-                        if let Err(e) = client.publish(&topic, QoS::AtLeastOnce, false, payload.as_bytes()).await {
+                        // The daemon's legacy ESS action toggles; do not request
+                        // QoS 1 redelivery for this non-idempotent command.
+                        let qos = if topic == format!("{inverter_prefix}/cmd/ess_mode") {
+                            QoS::AtMostOnce
+                        } else {
+                            QoS::AtLeastOnce
+                        };
+                        if let Err(e) = client.publish(&topic, qos, false, payload.as_bytes()).await {
                             warn!(error = %e, "command publish failed");
                         }
                     } else {
@@ -191,6 +217,14 @@ impl MqttBridge {
                 }
             }
         }
+    }
+
+    fn parse_inverter(payload: &[u8]) -> Option<serde_json::Value> {
+        if payload.is_empty() {
+            return Some(serde_json::Value::Null);
+        }
+        let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+        (value.is_object() || value.is_null()).then_some(value)
     }
 
     /// Parse a Victron MQTT topic+payload into a ParsedUpdate.
@@ -332,6 +366,7 @@ mod tests {
             energy: Default::default(),
             topic_prefix: "N/test/".into(),
             write_topic_prefix: "W/test/".into(),
+            inverter_topic_prefix: "inverter".into(),
             allow_insecure: false,
             cors_origins: Vec::new(),
         }
@@ -489,6 +524,7 @@ mod tests {
             eventloop,
             shared.clone(),
             "N/test/".into(),
+            "inverter".into(),
             shutdown_tx.subscribe(),
             client.clone(),
             command_rx,
@@ -510,7 +546,7 @@ mod tests {
                 let mut subscriptions = 0;
                 let mut command = false;
                 let mut keepalive = false;
-                while subscriptions < 11 || !command || !keepalive {
+                while subscriptions < 14 || !command || !keepalive {
                     let (header, body) = read_packet(&mut socket).await.unwrap();
                     match header {
                         0x82 => {
@@ -576,6 +612,25 @@ mod tests {
                 shared.snapshot().unwrap().battery["0/Dc/0/Voltage"],
                 52 - round
             );
+            // The retained daemon envelope is independent of N/<portal> leaves.
+            let topic = b"inverter/state";
+            let payload = b"{\"booleans\":{\"only_charging\":true}}";
+            let mut packet = vec![0x31, (2 + topic.len() + payload.len()) as u8];
+            packet.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+            packet.extend_from_slice(topic);
+            packet.extend_from_slice(payload);
+            socket.write_all(&packet).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while shared.snapshot().unwrap().inverter.is_none() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                shared.snapshot().unwrap().inverter.unwrap()["booleans"]["only_charging"],
+                true
+            );
             if round == 0 {
                 drop(socket);
                 tokio::time::timeout(Duration::from_secs(1), async {
@@ -609,6 +664,24 @@ mod tests {
         assert!(!shared.is_connected());
     }
 
+    #[test]
+    fn controller_payload_accepts_objects_and_retained_removal_only() {
+        for payload in [b"".as_slice(), b"null"] {
+            assert_eq!(
+                MqttBridge::parse_inverter(payload),
+                Some(serde_json::Value::Null)
+            );
+        }
+        assert!(
+            MqttBridge::parse_inverter(b"{\"booleans\":{\"no_feed\":false}}")
+                .unwrap()
+                .is_object()
+        );
+        for invalid in [b"[]".as_slice(), b"false", b"1", b"invalid"] {
+            assert!(MqttBridge::parse_inverter(invalid).is_none());
+        }
+    }
+
     #[tokio::test]
     async fn shutdown_cancels_enqueue_while_broker_withholds_connack() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -628,6 +701,7 @@ mod tests {
             eventloop,
             shared,
             "N/test/".into(),
+            "inverter".into(),
             shutdown_tx.subscribe(),
             client.clone(),
             command_rx,
