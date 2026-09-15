@@ -13,6 +13,8 @@ use crate::energy::{is_energy_path, EnergyConfig, EnergyResponse, Reading};
 /// (e.g. system["0/Dc/Battery/Soc"] = 77.5).
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Snapshot {
+    /// Retained inverter-control state. Null means unavailable; it is not HA state.
+    pub inverter: Option<serde_json::Map<String, Value>>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub system: HashMap<String, Value>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
@@ -48,6 +50,7 @@ struct Telemetry {
     ready: bool,
     generation: u64,
     dirty: bool,
+    inverter_received_at: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -62,7 +65,22 @@ pub struct Shared {
     pub command_tx: parking_lot::Mutex<Option<mpsc::UnboundedSender<CommandRequest>>>,
 }
 
-pub type CommandRequest = (String, String); // (topic, payload)
+#[derive(Debug)]
+pub struct CommandRequest {
+    pub topic: String,
+    pub payload: String,
+    controller: Option<(u64, Instant)>,
+}
+
+impl From<(String, String)> for CommandRequest {
+    fn from((topic, payload): (String, String)) -> Self {
+        Self {
+            topic,
+            payload,
+            controller: None,
+        }
+    }
+}
 
 impl Shared {
     pub fn new() -> Arc<Self> {
@@ -78,6 +96,34 @@ impl Shared {
         self.telemetry.read().connected
     }
 
+    pub fn controller_command(&self, topic: String, payload: String) -> Option<CommandRequest> {
+        let telemetry = self.telemetry.read();
+        (telemetry.connected && telemetry.current_snapshot().inverter.is_some()).then(|| {
+            CommandRequest {
+                topic,
+                payload,
+                controller: Some((telemetry.generation, Instant::now())),
+            }
+        })
+    }
+
+    /// Hold the connection guard through nonblocking enqueue. A disconnect
+    /// invalidates old commands even if retained state arrives after reconnect.
+    pub fn send_if_current(&self, request: &CommandRequest, send: impl FnOnce()) -> bool {
+        let telemetry = self.telemetry.read();
+        if let Some((generation, queued)) = request.controller {
+            if !telemetry.connected
+                || generation != telemetry.generation
+                || queued.elapsed() > Duration::from_secs(5)
+                || telemetry.current_snapshot().inverter.is_none()
+            {
+                return false;
+            }
+        }
+        send();
+        true
+    }
+
     pub fn set_connected(&self, connected: bool) {
         let mut telemetry = self.telemetry.write();
         if telemetry.connected == connected {
@@ -87,6 +133,7 @@ impl Shared {
         if !connected {
             telemetry.generation += 1;
             telemetry.snapshot = Snapshot::default();
+            telemetry.inverter_received_at = None;
             telemetry.energy_readings.clear();
             telemetry.ready = false;
             telemetry.dirty = false;
@@ -100,7 +147,23 @@ impl Shared {
 
     pub fn snapshot(&self) -> Option<Snapshot> {
         let telemetry = self.telemetry.read();
-        (telemetry.connected && telemetry.ready).then(|| telemetry.snapshot.clone())
+        (telemetry.connected && telemetry.ready).then(|| telemetry.current_snapshot())
+    }
+
+    /// Keep daemon metadata separate from native leaf overlays and invalidate
+    /// it when the daemon stops publishing while the broker remains connected.
+    pub fn update_inverter(&self, value: Value) {
+        if !value.is_object() && !value.is_null() {
+            return;
+        }
+        let mut telemetry = self.telemetry.write();
+        if !telemetry.connected {
+            return;
+        }
+        telemetry.snapshot.inverter = value.as_object().cloned();
+        telemetry.inverter_received_at = value.is_object().then(Instant::now);
+        telemetry.ready |= value.is_object();
+        telemetry.dirty = self.sse_tx.receiver_count() > 0;
     }
 
     pub fn energy(&self, cfg: &EnergyConfig) -> EnergyResponse {
@@ -169,6 +232,17 @@ impl Shared {
 
     pub(crate) fn broadcast_snapshot(&self) {
         let mut telemetry = self.telemetry.write();
+        // Expiry is itself a state change, even when every MQTT publisher is
+        // silent. Existing SSE clients must receive the unavailable state.
+        if telemetry.snapshot.inverter.is_some()
+            && telemetry
+                .inverter_received_at
+                .is_none_or(|at| at.elapsed() > Duration::from_secs(120))
+        {
+            telemetry.snapshot.inverter = None;
+            telemetry.inverter_received_at = None;
+            telemetry.dirty = self.sse_tx.receiver_count() > 0;
+        }
         if !telemetry.connected || !telemetry.dirty {
             return;
         }
@@ -176,7 +250,7 @@ impl Shared {
         if self.sse_tx.receiver_count() > 0 {
             let _ = self.sse_tx.send(SnapshotEvent {
                 generation: telemetry.generation,
-                snapshot: Some(telemetry.snapshot.clone()),
+                snapshot: Some(telemetry.current_snapshot()),
             });
         }
     }
@@ -192,6 +266,19 @@ impl Shared {
                 this.broadcast_snapshot();
             }
         });
+    }
+}
+
+impl Telemetry {
+    fn current_snapshot(&self) -> Snapshot {
+        let mut snapshot = self.snapshot.clone();
+        if self
+            .inverter_received_at
+            .is_none_or(|at| at.elapsed() > Duration::from_secs(120))
+        {
+            snapshot.inverter = None;
+        }
+        snapshot
     }
 }
 
@@ -214,7 +301,10 @@ fn path_keep(service: &str, path: &str) -> bool {
         None => ("", path),
     };
     match service {
-        "settings" => false,
+        "settings" => matches!(
+            leaf,
+            "Settings/CGwacs/Hub4Mode" | "Settings/CGwacs/BatteryLife/State"
+        ),
         "system" => matches!(
             leaf,
             "Ac/Grid/L1/Power"
@@ -280,6 +370,9 @@ fn path_keep(service: &str, path: &str) -> bool {
         "pump" => leaf == "Status" || leaf == "ProductName" || leaf == "CustomName",
         "ev" | "evcharger" => {
             leaf.contains("Power")
+                || leaf == "Soc"
+                || leaf == "VIN"
+                || leaf == "Connected"
                 || leaf == "ProductName"
                 || leaf == "CustomName"
                 || leaf == "Status"
@@ -420,6 +513,71 @@ mod tests {
     }
 
     #[test]
+    fn controller_snapshot_tracks_replacement_removal_and_freshness() {
+        let shared = Shared::new();
+        shared.set_connected(true);
+        shared.update_inverter(json!({"booleans":{"only_charging":true},"ess_mode":{"is_external":true},"ui_config":{"header_toggles":[]}}));
+        let snap = shared.snapshot().unwrap();
+        assert_eq!(snap.inverter.unwrap()["booleans"]["only_charging"], true);
+        shared.update_inverter(json!({"booleans":{"no_feed":false}}));
+        assert!(!shared.snapshot().unwrap().inverter.unwrap()["booleans"]
+            .as_object()
+            .unwrap()
+            .contains_key("only_charging"));
+        shared.telemetry.write().inverter_received_at =
+            Some(Instant::now() - Duration::from_secs(121));
+        shared.update(ParsedUpdate {
+            service: "ev".into(),
+            path: "99/Soc".into(),
+            value: json!(0),
+        });
+        let stale = shared.snapshot().unwrap();
+        assert!(stale.inverter.is_none());
+        assert_eq!(stale.ev["99/Soc"], 0);
+        assert!(serde_json::to_value(stale).unwrap()["inverter"].is_null());
+        shared.update_inverter(json!({"booleans":{"no_feed":true}}));
+        shared.update_inverter(Value::Null);
+        assert!(shared.snapshot().unwrap().inverter.is_none());
+        shared.update_inverter(json!({"booleans":{"no_feed":true}}));
+        shared.set_connected(false);
+        shared.set_connected(true);
+        shared.update(ParsedUpdate {
+            service: "evcharger".into(),
+            path: "71/Ac/Power".into(),
+            value: json!(0),
+        });
+        assert!(shared.snapshot().unwrap().inverter.is_none());
+    }
+
+    #[test]
+    fn snapshot_keeps_soc_and_only_the_ess_settings() {
+        let shared = Shared::new();
+        shared.set_connected(true);
+        for (service, path, value) in [
+            ("ev", "812/Soc", json!(42)),
+            ("evcharger", "17/Soc", json!(0)),
+            ("settings", "0/Settings/CGwacs/Hub4Mode", json!(3)),
+            ("settings", "0/Settings/CGwacs/BatteryLife/State", json!(9)),
+            (
+                "settings",
+                "0/Settings/InverterControl/OnlyCharging",
+                json!(1),
+            ),
+        ] {
+            shared.update(ParsedUpdate {
+                service: service.into(),
+                path: path.into(),
+                value,
+            });
+        }
+        let snapshot = shared.snapshot().unwrap();
+        assert_eq!(snapshot.ev["812/Soc"], 42);
+        assert_eq!(snapshot.evcharger["17/Soc"], 0);
+        assert_eq!(snapshot.settings.len(), 2);
+        assert_eq!(snapshot.settings["0/Settings/CGwacs/Hub4Mode"], 3);
+    }
+
+    #[test]
     fn unknown_service_ignored() {
         let mut snap = Snapshot::default();
         apply_update(
@@ -471,6 +629,55 @@ mod tests {
             snap.platform.get("0/Notifications/3/Description"),
             Some(&json!("High cell voltage"))
         );
+    }
+
+    #[test]
+    fn queued_controller_commands_expire_and_cannot_cross_connections() {
+        let shared = Shared::new();
+        shared.set_connected(true);
+        shared.update_inverter(json!({"booleans": {"only_charging": false}}));
+        let request = shared
+            .controller_command("inverter/cmd/ess_mode".into(), "{}".into())
+            .unwrap();
+        assert!(shared.send_if_current(&request, || {}));
+        shared.set_connected(false);
+        assert!(!shared.send_if_current(&request, || panic!("disconnected publish")));
+        shared.set_connected(true);
+        shared.update_inverter(json!({"booleans": {"only_charging": false}}));
+        assert!(!shared.send_if_current(&request, || panic!("replayed publish")));
+        let mut fresh = shared
+            .controller_command("inverter/cmd/toggle".into(), "{}".into())
+            .unwrap();
+        fresh.controller.as_mut().unwrap().1 = Instant::now() - Duration::from_secs(6);
+        assert!(!shared.send_if_current(&fresh, || panic!("expired queued publish")));
+        let fresh = shared
+            .controller_command("inverter/cmd/toggle".into(), "{}".into())
+            .unwrap();
+        shared.update_inverter(Value::Null);
+        assert!(!shared.send_if_current(&fresh, || panic!("unavailable controller publish")));
+    }
+
+    #[test]
+    fn controller_expiry_notifies_idle_sse_clients_once() {
+        let shared = Shared::new();
+        shared.set_connected(true);
+        shared.update_inverter(json!({"booleans": {"only_charging": true}}));
+        let (_, mut events) = shared.subscribe().unwrap();
+        shared.telemetry.write().inverter_received_at =
+            Some(Instant::now() - Duration::from_secs(121));
+        assert!(!shared.telemetry.read().dirty);
+
+        shared.broadcast_snapshot();
+        assert!(events
+            .try_recv()
+            .unwrap()
+            .snapshot
+            .unwrap()
+            .inverter
+            .is_none());
+        assert!(shared.snapshot().unwrap().inverter.is_none());
+        shared.broadcast_snapshot();
+        assert!(events.try_recv().is_err());
     }
 
     #[test]

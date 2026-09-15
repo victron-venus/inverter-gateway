@@ -1,5 +1,10 @@
 # inverter-gateway
 
+Dashboard ESS, inverter-control flags and discovered EV data are available over
+the same authenticated snapshot/SSE transport. See
+[dashboard control and EV telemetry](docs/dashboard-control-telemetry.md) for
+the `inverter` envelope, freshness rules and scoped header commands.
+
 Remote HTTPS/SSE gateway for a Victron Cerbo GX, fronted by Cloudflare
 Tunnel + Cloudflare Access. Subscribes to the local MQTT broker, exposes a
 curated JSON snapshot, streams changes over SSE, and accepts a whitelisted
