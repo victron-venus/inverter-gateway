@@ -46,11 +46,15 @@ pub struct Snapshot {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Capabilities {
     pub water_mode: bool,
+    pub setpoint_override: bool,
 }
 
 impl Default for Capabilities {
     fn default() -> Self {
-        Self { water_mode: true }
+        Self {
+            water_mode: true,
+            setpoint_override: true,
+        }
     }
 }
 
@@ -63,6 +67,9 @@ struct Telemetry {
     generation: u64,
     dirty: bool,
     inverter_received_at: Option<Instant>,
+    // Dedicated acknowledgements own this field. Never revive an older value
+    // embedded in a retained inverter/state while waiting for the current ACK.
+    setpoint_override: Value,
 }
 
 #[derive(Clone)]
@@ -87,6 +94,7 @@ pub struct CommandRequest {
 #[derive(Debug, Clone, Copy)]
 enum CommandTarget {
     Controller,
+    SetpointOverride,
     Water(u32),
 }
 
@@ -135,6 +143,14 @@ impl Shared {
 
     pub fn controller_command(&self, topic: String, payload: String) -> Option<CommandRequest> {
         self.guarded_command(topic, payload, CommandTarget::Controller)
+    }
+
+    pub fn setpoint_override_command(
+        &self,
+        topic: String,
+        payload: String,
+    ) -> Option<CommandRequest> {
+        self.guarded_command(topic, payload, CommandTarget::SetpointOverride)
     }
 
     pub fn water_command(
@@ -193,6 +209,7 @@ impl Shared {
             telemetry.generation += 1;
             telemetry.snapshot = Snapshot::default();
             telemetry.inverter_received_at = None;
+            telemetry.setpoint_override = Value::Null;
             telemetry.energy_readings.clear();
             telemetry.ready = false;
             telemetry.dirty = false;
@@ -219,9 +236,23 @@ impl Shared {
         if !telemetry.connected {
             return;
         }
+        if value.is_null() {
+            telemetry.setpoint_override = Value::Null;
+        }
         telemetry.snapshot.inverter = value.as_object().cloned();
         telemetry.inverter_received_at = value.is_object().then(Instant::now);
         telemetry.ready |= value.is_object();
+        telemetry.dirty = self.sse_tx.receiver_count() > 0;
+    }
+
+    /// The daemon publishes command acknowledgements independently of its
+    /// slower full state. Receiving one must not renew controller liveness.
+    pub fn update_setpoint_override(&self, value: Value) {
+        let mut telemetry = self.telemetry.write();
+        if !telemetry.connected {
+            return;
+        }
+        telemetry.setpoint_override = value;
         telemetry.dirty = self.sse_tx.receiver_count() > 0;
     }
 
@@ -332,6 +363,12 @@ impl Telemetry {
     fn command_target_available(&self, target: CommandTarget) -> bool {
         match target {
             CommandTarget::Controller => self.current_snapshot().inverter.is_some(),
+            CommandTarget::SetpointOverride => self
+                .current_snapshot()
+                .inverter
+                .as_ref()
+                .and_then(|inverter| inverter.get("setpoint_override"))
+                .is_some_and(Value::is_object),
             CommandTarget::Water(instance) => {
                 let pump = &self.snapshot.pump;
                 let valid_mode = pump
@@ -353,6 +390,9 @@ impl Telemetry {
             .is_none_or(|at| at.elapsed() > Duration::from_secs(120))
         {
             snapshot.inverter = None;
+        }
+        if let Some(inverter) = snapshot.inverter.as_mut() {
+            inverter.insert("setpoint_override".into(), self.setpoint_override.clone());
         }
         snapshot
     }
@@ -658,6 +698,99 @@ mod tests {
         assert_eq!(snapshot.evcharger["17/Soc"], 0);
         assert_eq!(snapshot.settings.len(), 2);
         assert_eq!(snapshot.settings["0/Settings/CGwacs/Hub4Mode"], 3);
+    }
+
+    #[test]
+    fn dedicated_override_ack_is_authoritative_and_does_not_renew_controller() {
+        let shared = Shared::new();
+        shared.set_connected(true);
+        let old = json!({"value":10,"last_error":null,"request_id":"old"});
+        let ack = json!({"value":-25,"last_error":null,"request_id":"new"});
+        shared.update_inverter(json!({"setpoint_override":old}));
+        assert!(shared.snapshot().unwrap().inverter.unwrap()["setpoint_override"].is_null());
+        let controller_received = shared.telemetry.read().inverter_received_at;
+        let mut events = shared.subscribe().unwrap().1;
+        shared.update_setpoint_override(ack.clone());
+        assert_eq!(
+            shared.telemetry.read().inverter_received_at,
+            controller_received
+        );
+        shared.broadcast_snapshot();
+        assert_eq!(
+            events
+                .try_recv()
+                .unwrap()
+                .snapshot
+                .unwrap()
+                .inverter
+                .unwrap()["setpoint_override"],
+            ack
+        );
+        shared.update_inverter(json!({"setpoint_override":old}));
+        assert_eq!(
+            shared.snapshot().unwrap().inverter.unwrap()["setpoint_override"],
+            ack
+        );
+        // A status tombstone must dominate an older embedded envelope.
+        shared.update_setpoint_override(Value::Null);
+        shared.update_inverter(json!({"setpoint_override":old}));
+        assert!(shared.snapshot().unwrap().inverter.unwrap()["setpoint_override"].is_null());
+        shared.telemetry.write().inverter_received_at =
+            Some(Instant::now() - Duration::from_secs(121));
+        shared.update_setpoint_override(ack.clone());
+        assert!(
+            shared.snapshot().unwrap().inverter.is_none(),
+            "ACK cannot revive expired controller"
+        );
+        shared.set_connected(false);
+        shared.update_setpoint_override(old.clone());
+        shared.set_connected(true);
+        shared.update_inverter(json!({"setpoint_override":old}));
+        assert!(shared.snapshot().unwrap().inverter.unwrap()["setpoint_override"].is_null());
+        // The dedicated retained publication may arrive before the full state.
+        shared.update_inverter(Value::Null);
+        shared.update_setpoint_override(ack.clone());
+        assert!(shared.snapshot().unwrap().inverter.is_none());
+        shared.update_inverter(json!({"setpoint_override":old}));
+        assert_eq!(
+            shared.snapshot().unwrap().inverter.unwrap()["setpoint_override"],
+            ack
+        );
+    }
+
+    #[test]
+    fn override_commands_revalidate_ack_controller_age_queue_age_and_connection() {
+        let shared = Shared::new();
+        let command = || {
+            shared.setpoint_override_command(
+                "site/control/cmd/setpoint_override".into(),
+                "{\"value\":null,\"request_id\":\"id\"}".into(),
+            )
+        };
+        let ack = json!({"value":null,"last_error":null,"request_id":null});
+        shared.set_connected(true);
+        shared.update_inverter(json!({"booleans":{}}));
+        assert!(command().is_none());
+        shared.update_setpoint_override(ack.clone());
+        let queued = command().unwrap();
+        shared.update_setpoint_override(Value::Null);
+        assert!(!shared.send_if_current(&queued, || panic!("unknown ACK")));
+        shared.update_setpoint_override(ack.clone());
+        shared.telemetry.write().inverter_received_at =
+            Some(Instant::now() - Duration::from_secs(121));
+        assert!(command().is_none());
+        assert!(!shared.send_if_current(&queued, || panic!("expired controller")));
+        shared.update_inverter(json!({"booleans":{}}));
+        let mut expired = command().unwrap();
+        expired.guard.as_mut().unwrap().queued = Instant::now() - Duration::from_secs(6);
+        assert!(!shared.send_if_current(&expired, || panic!("expired queue")));
+        let queued = command().unwrap();
+        shared.set_connected(false);
+        shared.set_connected(true);
+        shared.update_inverter(json!({"booleans":{}}));
+        shared.update_setpoint_override(ack);
+        assert!(!shared.send_if_current(&queued, || panic!("crossed connection")));
+        assert!(shared.send_if_current(&command().unwrap(), || {}));
     }
 
     #[test]

@@ -11,7 +11,9 @@ daemon's state, including `booleans`, `ess_mode`, `dry_run`, and
 `null` before the first publication, after retained-message removal, or after
 120 seconds without a controller publication. A broker disconnect invalidates
 the entire snapshot; reads return 503 until telemetry is received again. Native
-device updates do not refresh the controller's age.
+device updates do not refresh the controller's age. The `setpoint_override`
+field is the exception to envelope replacement: its authoritative value comes
+from the daemon's dedicated acknowledgement topic, as described below.
 
 The native `ev` and `evcharger` buckets retain `Soc`, `Connected`, names, VIN,
 power, status and mode. Keys retain the actual instance number, for example
@@ -46,8 +48,8 @@ connected broker. Their MQTT publications are never retained.
 
 The explicit flag and dry-run setters use QoS 1. A successful response means the
 command was queued, not that physical equipment changed; clients display the
-subsequent daemon state as confirmation. There is no raw MQTT passthrough, new
-setpoint API or arbitrary Home Assistant command forwarding.
+subsequent daemon state as confirmation. There is no raw MQTT passthrough or
+arbitrary Home Assistant command forwarding.
 
 Tests cover native leaf retention, controller replacement/removal/expiry,
 reconnect invalidation, subscription delivery with a one-item MQTT queue, and
@@ -61,7 +63,60 @@ state when the bridge hands it to the broker client. A disconnect drops pending
 controller publications before reconnecting; legacy native alarm commands retain
 their existing behavior. HTTP acceptance acknowledges queueing, not execution by
 the physical controller. The five-second limit ends at broker-client handoff;
-MQTT and the daemon do not provide an execution deadline or an execution receipt.
+MQTT does not provide an execution deadline. The override command below has a
+separate correlated daemon acknowledgement; other command success remains
+queue acceptance followed by state readback.
+
+## Correlated setpoint override
+
+`capabilities.setpoint_override: true` advertises the gateway route. Clients must
+also require a non-null `inverter.setpoint_override` status before enabling the
+editor; a gateway capability alone does not prove daemon support or availability.
+
+`POST /v1/commands/setpoint_override` accepts exactly two fields:
+
+```json
+{"value":-250,"request_id":"e29f9247-af9b-4994-b30f-04e727d9c484"}
+```
+
+`value` must be a JSON integer in `-2147483648..=2147483647` or `null`.
+Booleans, floating-point values and strings are rejected. `request_id` is a
+nonempty string of at most 128 ASCII letters, digits, `.`, `_`, `:`, or `-`;
+UUIDs are supported. Extra fields and arbitrary topics are rejected. The write
+credential is required; read credentials can only inspect the status.
+
+The command is sent once, with QoS 0 and no retain flag, to
+`<INVERTER_TOPIC_PREFIX>/cmd/setpoint_override`. It uses the existing five-second
+queue deadline and connection-generation guard, and additionally requires a
+valid dedicated override status at enqueue and broker-client handoff. The daemon
+applies an explicit watt value and maintains it every two seconds until stopped.
+`null` stops the override without writing zero. It is independent of DRY mode;
+the daemon owns physical writes and their validation.
+
+HTTP 200 acknowledges queueing only. The gateway subscribes to the retained
+`<INVERTER_TOPIC_PREFIX>/setpoint_override` topic and places its object in
+`snapshot.inverter.setpoint_override` (also in SSE snapshots):
+
+```json
+{"value":-250,"last_error":null,"request_id":"e29f9247-af9b-4994-b30f-04e727d9c484"}
+```
+
+Clients generate a fresh identifier for each explicit user request, send only
+one POST, then wait for a status with that identifier. A non-null `last_error`
+means rejection/failure; `value` reports the actual current override intent and
+can retain the previous value after a failed edit. Timeout or interrupted HTTP
+is not proof of rejection: clients must not automatically retry or switch
+transports, and should refresh status before another user decision.
+
+Dedicated acknowledgements override older embedded `inverter/state` status.
+Before the first valid acknowledgement, after a broker disconnect, and after
+null/empty or malformed acknowledgement payloads, the status is `null` (unknown,
+not inactive). A valid status with `value:null` explicitly means no active
+override. Status may arrive before its controller envelope and is buffered, but
+does not refresh the controller's 120-second liveness deadline. If the controller
+expires, its entire `inverter` object becomes null and override controls are
+unavailable. An older daemon without the dedicated topic remains unsupported;
+the gateway does not substitute potentially stale embedded state.
 
 ## Native water telemetry and commands
 
