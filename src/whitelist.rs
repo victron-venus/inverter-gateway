@@ -80,19 +80,15 @@ fn controller_payload(name: &str, body: Value) -> Result<Value, CommandError> {
 pub async fn execute(state: &AppState, name: &str, body: Value) -> Result<(), CommandError> {
     static WL: std::sync::LazyLock<Whitelist> = std::sync::LazyLock::new(builtin_whitelist);
 
-    let (topic, payload) = if matches!(name, "toggle" | "dry_run" | "ess_mode") {
+    let request = if matches!(name, "toggle" | "dry_run" | "ess_mode") {
         let payload = controller_payload(name, body)?;
-        if state
+        state
             .shared
-            .snapshot()
-            .is_none_or(|snapshot| snapshot.inverter.is_none())
-        {
-            return Err(CommandError::Unavailable);
-        }
-        (
-            format!("{}/cmd/{name}", state.cfg.inverter_topic_prefix),
-            payload.to_string(),
-        )
+            .controller_command(
+                format!("{}/cmd/{name}", state.cfg.inverter_topic_prefix),
+                payload.to_string(),
+            )
+            .ok_or(CommandError::Unavailable)?
     } else {
         let (topic_suffix, payload) = WL
             .get(name)
@@ -101,14 +97,15 @@ pub async fn execute(state: &AppState, name: &str, body: Value) -> Result<(), Co
             format!("{}{}", state.cfg.write_topic_prefix, topic_suffix),
             payload.to_string(),
         )
+            .into()
     };
-    tracing::debug!(cmd = %name, topic = %topic, "executing command");
+    tracing::debug!(cmd = %name, topic = %request.topic, "executing command");
 
     // Publish through the MQTT client held by the bridge.
     // Bridge is not accessible here directly — expose publish via a channel on Shared.
     let tx = state.shared.command_tx.lock();
     let tx = tx.as_ref().ok_or(CommandError::NotWired)?;
-    tx.send((topic, payload))
+    tx.send(request)
         .map_err(|e| CommandError::PublishFailed(e.to_string()))?;
     Ok(())
 }
@@ -164,7 +161,8 @@ mod tests {
             )
             .await
             .unwrap();
-            let (topic, payload) = rx.try_recv().unwrap();
+            let request = rx.try_recv().unwrap();
+            let (topic, payload) = (request.topic, request.payload);
             assert_eq!(topic, "house/control/cmd/toggle");
             assert_eq!(
                 serde_json::from_str::<Value>(&payload).unwrap(),
@@ -188,7 +186,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            rx.try_recv().unwrap(),
+            rx.try_recv().map(|r| (r.topic, r.payload)).unwrap(),
             (
                 "house/control/cmd/dry_run".into(),
                 "{\"value\":true}".into()
@@ -196,7 +194,7 @@ mod tests {
         );
         execute(&state, "ess_mode", json!({})).await.unwrap();
         assert_eq!(
-            rx.try_recv().unwrap(),
+            rx.try_recv().map(|r| (r.topic, r.payload)).unwrap(),
             ("house/control/cmd/ess_mode".into(), "{}".into())
         );
         assert!(execute(&state, "dry_run", json!({})).await.is_err());

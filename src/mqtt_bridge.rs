@@ -119,7 +119,7 @@ impl MqttBridge {
         tokio::select! {
             _ = shutdown.recv() => info!("mqtt shutdown signal"),
             _ = Self::poll_events(eventloop, &shared, &topic_prefix, &inverter_prefix, connected_tx) => {},
-            _ = Self::send_requests(&client, &topic_prefix, &inverter_prefix, command_rx, connected_rx) => {},
+            _ = Self::send_requests(&client, &shared, &topic_prefix, &inverter_prefix, command_rx, connected_rx) => {},
         }
         shared.set_connected(false);
         info!("mqtt loop stopped");
@@ -157,12 +157,14 @@ impl MqttBridge {
                 Ok(Event::Incoming(Packet::Disconnect)) => {
                     info!("mqtt disconnected by broker");
                     shared.set_connected(false);
+                    Self::discard_controller_replay(&mut eventloop, inverter_prefix);
                 }
                 Ok(Event::Incoming(Packet::PingResp)) | Ok(Event::Outgoing(_)) => {}
                 Ok(Event::Incoming(other)) => debug!(packet = ?other, "mqtt packet"),
                 Err(e) => {
                     error!(error = %e, "mqtt connection error");
                     shared.set_connected(false);
+                    Self::discard_controller_replay(&mut eventloop, inverter_prefix);
                     tokio::time::sleep(Duration::from_secs(5)).await;
                 }
             }
@@ -171,6 +173,7 @@ impl MqttBridge {
 
     async fn send_requests(
         client: &AsyncClient,
+        shared: &Shared,
         topic_prefix: &str,
         inverter_prefix: &str,
         mut command_rx: tokio::sync::mpsc::UnboundedReceiver<crate::state::CommandRequest>,
@@ -198,16 +201,26 @@ impl MqttBridge {
                     }
                 }
                 cmd = command_rx.recv() => {
-                    if let Some((topic, payload)) = cmd {
+                    if let Some(request) = cmd {
+                        let topic = &request.topic;
+                        let payload = &request.payload;
                         debug!(topic = %topic, "publishing command");
                         // The daemon's legacy ESS action toggles; do not request
                         // QoS 1 redelivery for this non-idempotent command.
-                        let qos = if topic == format!("{inverter_prefix}/cmd/ess_mode") {
+                        let qos = if topic == &format!("{inverter_prefix}/cmd/ess_mode") {
                             QoS::AtMostOnce
                         } else {
                             QoS::AtLeastOnce
                         };
-                        if let Err(e) = client.publish(&topic, qos, false, payload.as_bytes()).await {
+                        if topic.starts_with(&format!("{inverter_prefix}/cmd/")) {
+                            if !shared.send_if_current(&request, || {
+                                if let Err(e) = client.try_publish(topic, qos, false, payload.as_bytes()) {
+                                    warn!(error = %e, "controller command queue unavailable");
+                                }
+                            }) {
+                                warn!("discarded stale controller command");
+                            }
+                        } else if let Err(e) = client.publish(topic, qos, false, payload.as_bytes()).await {
                             warn!(error = %e, "command publish failed");
                         }
                     } else {
@@ -217,6 +230,17 @@ impl MqttBridge {
                 }
             }
         }
+    }
+
+    fn discard_controller_replay(eventloop: &mut EventLoop, inverter_prefix: &str) {
+        // Connection state is already invalidated under Shared's write lock.
+        // Drain rumqttc's queue too, including a publish racing with the error.
+        eventloop.clean();
+        let prefix = format!("{inverter_prefix}/cmd/");
+        eventloop.pending.retain(|request| {
+            !matches!(request,
+            rumqttc::Request::Publish(publish) if publish.topic.starts_with(&prefix))
+        });
     }
 
     fn parse_inverter(payload: &[u8]) -> Option<serde_json::Value> {
@@ -554,10 +578,13 @@ mod tests {
                             subscriptions += 1;
                             if subscriptions == 1 && round == 0 {
                                 command_tx
-                                    .send((
-                                        "W/test/vebus/0/Alarm".into(),
-                                        "{\"SilenceAlarm\":\"1\"}".into(),
-                                    ))
+                                    .send(
+                                        (
+                                            "W/test/vebus/0/Alarm".into(),
+                                            "{\"SilenceAlarm\":\"1\"}".into(),
+                                        )
+                                            .into(),
+                                    )
                                     .unwrap();
                             }
                             socket
@@ -645,10 +672,13 @@ mod tests {
                 // This request arrives during the reconnect delay and must
                 // survive until the replacement broker connection is ready.
                 command_tx
-                    .send((
-                        "W/test/vebus/0/Alarm".into(),
-                        "{\"SilenceAlarm\":\"1\"}".into(),
-                    ))
+                    .send(
+                        (
+                            "W/test/vebus/0/Alarm".into(),
+                            "{\"SilenceAlarm\":\"1\"}".into(),
+                        )
+                            .into(),
+                    )
                     .unwrap();
             }
         }
@@ -680,6 +710,30 @@ mod tests {
         for invalid in [b"[]".as_slice(), b"false", b"1", b"invalid"] {
             assert!(MqttBridge::parse_inverter(invalid).is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn disconnect_discards_controller_requests_already_in_mqtt_queue() {
+        let opts = MqttOptions::new("discard-test", "127.0.0.1", 1883);
+        let (client, mut eventloop) = AsyncClient::new(opts, 8);
+        for action in ["toggle", "dry_run", "ess_mode"] {
+            client
+                .try_publish(
+                    format!("house/control/cmd/{action}"),
+                    QoS::AtLeastOnce,
+                    false,
+                    "{}",
+                )
+                .unwrap();
+        }
+        client
+            .try_publish("W/test/vebus/0/Alarm", QoS::AtLeastOnce, false, "{}")
+            .unwrap();
+        MqttBridge::discard_controller_replay(&mut eventloop, "house/control");
+        assert_eq!(eventloop.pending.len(), 1);
+        assert!(
+            matches!(&eventloop.pending[0], rumqttc::Request::Publish(p) if p.topic == "W/test/vebus/0/Alarm")
+        );
     }
 
     #[tokio::test]

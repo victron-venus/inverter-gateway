@@ -65,7 +65,22 @@ pub struct Shared {
     pub command_tx: parking_lot::Mutex<Option<mpsc::UnboundedSender<CommandRequest>>>,
 }
 
-pub type CommandRequest = (String, String); // (topic, payload)
+#[derive(Debug)]
+pub struct CommandRequest {
+    pub topic: String,
+    pub payload: String,
+    controller: Option<(u64, Instant)>,
+}
+
+impl From<(String, String)> for CommandRequest {
+    fn from((topic, payload): (String, String)) -> Self {
+        Self {
+            topic,
+            payload,
+            controller: None,
+        }
+    }
+}
 
 impl Shared {
     pub fn new() -> Arc<Self> {
@@ -79,6 +94,34 @@ impl Shared {
 
     pub fn is_connected(&self) -> bool {
         self.telemetry.read().connected
+    }
+
+    pub fn controller_command(&self, topic: String, payload: String) -> Option<CommandRequest> {
+        let telemetry = self.telemetry.read();
+        (telemetry.connected && telemetry.current_snapshot().inverter.is_some()).then(|| {
+            CommandRequest {
+                topic,
+                payload,
+                controller: Some((telemetry.generation, Instant::now())),
+            }
+        })
+    }
+
+    /// Hold the connection guard through nonblocking enqueue. A disconnect
+    /// invalidates old commands even if retained state arrives after reconnect.
+    pub fn send_if_current(&self, request: &CommandRequest, send: impl FnOnce()) -> bool {
+        let telemetry = self.telemetry.read();
+        if let Some((generation, queued)) = request.controller {
+            if !telemetry.connected
+                || generation != telemetry.generation
+                || queued.elapsed() > Duration::from_secs(5)
+                || telemetry.current_snapshot().inverter.is_none()
+            {
+                return false;
+            }
+        }
+        send();
+        true
     }
 
     pub fn set_connected(&self, connected: bool) {
@@ -586,6 +629,32 @@ mod tests {
             snap.platform.get("0/Notifications/3/Description"),
             Some(&json!("High cell voltage"))
         );
+    }
+
+    #[test]
+    fn queued_controller_commands_expire_and_cannot_cross_connections() {
+        let shared = Shared::new();
+        shared.set_connected(true);
+        shared.update_inverter(json!({"booleans": {"only_charging": false}}));
+        let request = shared
+            .controller_command("inverter/cmd/ess_mode".into(), "{}".into())
+            .unwrap();
+        assert!(shared.send_if_current(&request, || {}));
+        shared.set_connected(false);
+        assert!(!shared.send_if_current(&request, || panic!("disconnected publish")));
+        shared.set_connected(true);
+        shared.update_inverter(json!({"booleans": {"only_charging": false}}));
+        assert!(!shared.send_if_current(&request, || panic!("replayed publish")));
+        let mut fresh = shared
+            .controller_command("inverter/cmd/toggle".into(), "{}".into())
+            .unwrap();
+        fresh.controller.as_mut().unwrap().1 = Instant::now() - Duration::from_secs(6);
+        assert!(!shared.send_if_current(&fresh, || panic!("expired queued publish")));
+        let fresh = shared
+            .controller_command("inverter/cmd/toggle".into(), "{}".into())
+            .unwrap();
+        shared.update_inverter(Value::Null);
+        assert!(!shared.send_if_current(&fresh, || panic!("unavailable controller publish")));
     }
 
     #[test]

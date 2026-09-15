@@ -304,7 +304,7 @@ pub(crate) mod tests {
         let result =
             command_post(State(state), Path("toggle".into()), headers, Json(payload)).await;
         assert!(result.is_ok());
-        assert_eq!(rx.try_recv().unwrap().0, "inverter/cmd/toggle");
+        assert_eq!(rx.try_recv().unwrap().topic, "inverter/cmd/toggle");
     }
 
     #[test]
@@ -534,7 +534,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(commands.try_recv().unwrap().0, "W/test/vebus/0/Alarm");
+        assert_eq!(commands.try_recv().unwrap().topic, "W/test/vebus/0/Alarm");
     }
 
     #[tokio::test]
