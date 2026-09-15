@@ -307,6 +307,149 @@ pub(crate) mod tests {
         assert_eq!(rx.try_recv().unwrap().topic, "inverter/cmd/toggle");
     }
 
+    #[tokio::test]
+    async fn water_command_route_requires_write_auth_and_exact_native_payload() {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+
+        let mut cfg = cfg_with_token("write-secret");
+        cfg.topic_prefix = "N/site-portal/".into();
+        cfg.write_topic_prefix = "W/site-portal/".into();
+        let state = make_state(cfg);
+        state.shared.set_connected(true);
+        state.shared.update(crate::state::ParsedUpdate {
+            service: "pump".into(),
+            path: "7/Mode".into(),
+            value: serde_json::json!(0),
+        });
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        *state.shared.command_tx.lock() = Some(tx);
+        let app = router(state.clone());
+        for (token, payload, status) in [
+            (None, r#"{"instance":7,"mode":1}"#, StatusCode::UNAUTHORIZED),
+            (
+                Some("read-secret"),
+                r#"{"instance":7,"mode":1}"#,
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                Some("write-secret"),
+                r#"{"instance":8,"mode":1}"#,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                Some("write-secret"),
+                r#"{"instance":"7","mode":1}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                Some("write-secret"),
+                r#"{"instance":7,"mode":true}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                Some("write-secret"),
+                r#"{"instance":7,"mode":1.0}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                Some("write-secret"),
+                r#"{"instance":7.0,"mode":1}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                Some("write-secret"),
+                r#"{"instance":-1,"mode":1}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                Some("write-secret"),
+                r#"{"instance":4294967296,"mode":1}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                Some("write-secret"),
+                r#"{"instance":7,"mode":3}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                Some("write-secret"),
+                r#"{"instance":7,"mode":-1}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                Some("write-secret"),
+                r#"{"instance":7,"mode":1,"topic":"W/other/pump/7/Mode"}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                Some("write-secret"),
+                r#"{"which":"pump","mode":1}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (Some("write-secret"), r#"[7,1]"#, StatusCode::BAD_REQUEST),
+        ] {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/v1/commands/water_mode")
+                .header("Content-Type", "application/json");
+            if let Some(token) = token {
+                request = request.header("Authorization", format!("Bearer {token}"));
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::from(payload)).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status, "{payload}");
+            assert!(rx.try_recv().is_err());
+        }
+        for mode in 0..=2 {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/commands/water_mode")
+                        .header("Content-Type", "application/json")
+                        .header("Authorization", "Bearer write-secret")
+                        .body(Body::from(format!(r#"{{"instance":7,"mode":{mode}}}"#)))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let command = rx.try_recv().unwrap();
+            assert_eq!(command.topic, "W/site-portal/pump/7/Mode");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&command.payload).unwrap(),
+                serde_json::json!({"value":mode})
+            );
+            assert!(command.is_water_command());
+            assert!(state.shared.send_if_current(&command, || {}));
+            assert_eq!(
+                state.shared.snapshot().unwrap().pump["7/Mode"],
+                0,
+                "queue acceptance must not fabricate readback"
+            );
+        }
+        state.shared.set_connected(false);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/commands/water_mode")
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer write-secret")
+                    .body(Body::from(r#"{"instance":7,"mode":1}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(rx.try_recv().is_err());
+    }
+
     #[test]
     fn auth_rejects_missing_header() {
         let state = make_state(cfg_with_token("secret"));
@@ -462,7 +605,7 @@ pub(crate) mod tests {
         let data = frame.strip_prefix("data: ").unwrap().trim();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(data).unwrap(),
-            serde_json::json!({"inverter": null, "battery": {"0/Dc/0/Voltage": 49}})
+            serde_json::json!({"capabilities":{"water_mode":true}, "inverter": null, "battery": {"0/Dc/0/Voltage": 49}})
         );
         state.shared.set_connected(false);
         assert!(
