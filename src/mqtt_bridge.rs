@@ -203,20 +203,21 @@ impl MqttBridge {
                         let topic = &request.topic;
                         let payload = &request.payload;
                         debug!(topic = %topic, "publishing command");
-                        // The daemon's legacy ESS action toggles; do not request
-                        // QoS 1 redelivery for this non-idempotent command.
-                        let qos = if topic == &format!("{inverter_prefix}/cmd/ess_mode") {
+                        // Water overrides and the legacy ESS toggle must not
+                        // request redelivery after their originating state changes.
+                        let qos = if request.is_water_command()
+                            || topic == &format!("{inverter_prefix}/cmd/ess_mode") {
                             QoS::AtMostOnce
                         } else {
                             QoS::AtLeastOnce
                         };
-                        if topic.starts_with(&format!("{inverter_prefix}/cmd/")) {
+                        if request.is_guarded() {
                             if !shared.send_if_current(&request, || {
                                 if let Err(e) = client.try_publish(topic, qos, false, payload.as_bytes()) {
-                                    warn!(error = %e, "controller command queue unavailable");
+                                    warn!(error = %e, "guarded command queue unavailable");
                                 }
                             }) {
-                                warn!("discarded stale controller command");
+                                warn!("discarded stale guarded command");
                             }
                         } else if let Err(e) = client.publish(topic, qos, false, payload.as_bytes()).await {
                             warn!(error = %e, "command publish failed");
@@ -247,8 +248,15 @@ impl MqttBridge {
         let prefix = format!("{inverter_prefix}/cmd/");
         eventloop.pending.retain(|request| {
             !matches!(request,
-            rumqttc::Request::Publish(publish) if publish.topic.starts_with(&prefix))
+            rumqttc::Request::Publish(publish) if publish.topic.starts_with(&prefix)
+                || Self::is_water_write_topic(&publish.topic))
         });
+    }
+
+    fn is_water_write_topic(topic: &str) -> bool {
+        let parts: Vec<_> = topic.split('/').collect();
+        matches!(parts.as_slice(), ["W", _, "pump", instance, "Mode"]
+            if instance.parse::<u32>().is_ok())
     }
 
     fn parse_inverter(payload: &[u8]) -> Option<serde_json::Value> {
@@ -753,6 +761,14 @@ mod tests {
                 .unwrap();
         }
         client
+            .try_publish(
+                "W/test/pump/2/Mode",
+                QoS::AtMostOnce,
+                false,
+                "{\"value\":1}",
+            )
+            .unwrap();
+        client
             .try_publish("W/test/vebus/0/Alarm", QoS::AtLeastOnce, false, "{}")
             .unwrap();
         MqttBridge::discard_controller_replay(&mut eventloop, "house/control");
@@ -760,6 +776,49 @@ mod tests {
         assert!(
             matches!(&eventloop.pending[0], rumqttc::Request::Publish(p) if p.topic == "W/test/vebus/0/Alarm")
         );
+    }
+
+    #[tokio::test]
+    async fn water_commands_publish_once_without_retention_and_discard_on_disconnect() {
+        let opts = MqttOptions::new("water-queue-test", "127.0.0.1", 1883);
+        let (client, mut eventloop) = AsyncClient::new(opts, 16);
+        let shared = Shared::new();
+        shared.set_connected(true);
+        shared.update(ParsedUpdate {
+            service: "pump".into(),
+            path: "7/Mode".into(),
+            value: json!(0),
+        });
+        let request = shared
+            .water_command("W/test/pump/7/Mode".into(), "{\"value\":1}".into(), 7)
+            .unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(request).unwrap();
+        drop(tx);
+        let (_connected_tx, connected_rx) = tokio::sync::watch::channel(());
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            MqttBridge::send_requests(&client, &shared, "N/test/", "inverter", rx, connected_rx),
+        )
+        .await
+        .unwrap();
+        eventloop.clean();
+        let water: Vec<_> = eventloop
+            .pending
+            .iter()
+            .filter_map(|request| match request {
+                rumqttc::Request::Publish(p) if p.topic == "W/test/pump/7/Mode" => Some(p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(water.len(), 1);
+        assert_eq!(water[0].qos, QoS::AtMostOnce);
+        assert!(!water[0].retain);
+        assert_eq!(water[0].payload.as_ref(), b"{\"value\":1}");
+        assert_eq!(shared.snapshot().unwrap().pump["7/Mode"], 0);
+        MqttBridge::handle_disconnect(&shared, &mut eventloop, "inverter");
+        assert!(!eventloop.pending.iter().any(|request| matches!(request,
+            rumqttc::Request::Publish(p) if MqttBridge::is_water_write_topic(&p.topic))));
     }
 
     #[tokio::test]

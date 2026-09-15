@@ -26,7 +26,7 @@ fn builtin_whitelist() -> Whitelist {
 
 pub fn is_known(name: &str) -> bool {
     static WL: std::sync::LazyLock<Whitelist> = std::sync::LazyLock::new(builtin_whitelist);
-    WL.contains_key(name) || matches!(name, "toggle" | "dry_run" | "ess_mode")
+    WL.contains_key(name) || matches!(name, "toggle" | "dry_run" | "ess_mode" | "water_mode")
 }
 
 const CONTROL_FLAGS: &[&str] = &[
@@ -77,10 +77,42 @@ fn controller_payload(name: &str, body: Value) -> Result<Value, CommandError> {
     }
 }
 
+fn water_request(
+    state: &AppState,
+    body: Value,
+) -> Result<crate::state::CommandRequest, CommandError> {
+    let invalid =
+        || CommandError::InvalidBody("expected integer instance and mode (0, 1 or 2)".into());
+    let object = body
+        .as_object()
+        .filter(|object| object.len() == 2)
+        .ok_or_else(invalid)?;
+    let instance = object
+        .get("instance")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(invalid)?;
+    let mode = object
+        .get("mode")
+        .and_then(Value::as_u64)
+        .filter(|mode| *mode <= 2)
+        .ok_or_else(invalid)?;
+    state
+        .shared
+        .water_command(
+            format!("{}pump/{instance}/Mode", state.cfg.write_topic_prefix),
+            serde_json::json!({"value": mode}).to_string(),
+            instance,
+        )
+        .ok_or(CommandError::Unavailable)
+}
+
 pub async fn execute(state: &AppState, name: &str, body: Value) -> Result<(), CommandError> {
     static WL: std::sync::LazyLock<Whitelist> = std::sync::LazyLock::new(builtin_whitelist);
 
-    let request = if matches!(name, "toggle" | "dry_run" | "ess_mode") {
+    let request = if name == "water_mode" {
+        water_request(state, body)?
+    } else if matches!(name, "toggle" | "dry_run" | "ess_mode") {
         let payload = controller_payload(name, body)?;
         state
             .shared
@@ -126,7 +158,7 @@ impl std::fmt::Display for CommandError {
             CommandError::NotWired => write!(f, "command not wired to MQTT"),
             CommandError::PublishFailed(e) => write!(f, "mqtt publish failed: {e}"),
             CommandError::InvalidBody(e) => f.write_str(e),
-            CommandError::Unavailable => f.write_str("inverter-control state unavailable"),
+            CommandError::Unavailable => f.write_str("command target telemetry unavailable"),
         }
     }
 }

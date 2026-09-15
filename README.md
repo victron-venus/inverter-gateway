@@ -231,6 +231,7 @@ this repo).
 |---|---|---|---|
 | `silence_alarm` | `W/<portal_id>/vebus/0/Alarm` | `{"SilenceAlarm":"1"}` | Acknowledge active alarm |
 | `acknowledge_all_notifications` | `W/<portal_id>/platform/0/Notifications/AcknowledgeAll` | `{"value":1}` | Dismiss Venus GUIv2 banners (per-slot ack is often ignored) |
+| `water_mode` | `W/<portal_id>/pump/<instance>/Mode` | `{"value":0|1|2}` | Validated native pump/valve override; requires observed device state and write credentials |
 
 Snapshot also includes `platform` leaves (`<inst>/Notifications/<slot>/{Description,DeviceName,Service,DateTime,Type,Active,Acknowledged,Silenced}`) plus `Alarms/*` under `vebus`/`battery` so remote dashboards can render the same banners as LAN MQTT without a Cerbo client.
 
@@ -238,8 +239,10 @@ MQTT subscriptions use `N/<portal_id>/` (read). Command publications use
 `W/<portal_id>/` (write). Both are derived from `VICTRON_PORTAL_ID` or
 `VICTRON_TOPIC_PREFIX`.
 
-Adding a command: edit `src/whitelist.rs::builtin_whitelist`. Anything not
-in that table returns 404.
+Controller and water commands use dedicated validation in `src/whitelist.rs`;
+see [dashboard telemetry and commands](docs/dashboard-control-telemetry.md) for
+their request schemas, capability discovery and reconnect behavior. Commands
+outside this whitelist return 404.
 
 
 ## Performance notes

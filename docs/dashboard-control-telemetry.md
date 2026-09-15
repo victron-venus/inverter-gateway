@@ -62,3 +62,32 @@ controller publications before reconnecting; legacy native alarm commands retain
 their existing behavior. HTTP acceptance acknowledges queueing, not execution by
 the physical controller. The five-second limit ends at broker-client handoff;
 MQTT and the daemon do not provide an execution deadline or an execution receipt.
+
+## Native water telemetry and commands
+
+Snapshots advertise `"capabilities":{"water_mode":true}`. Clients must keep
+water controls unavailable against an older gateway that omits this capability.
+The `pump` bucket retains `State`, `Mode`, `Connected`, `Status` and device names;
+the `tank` bucket retains `Level`, `Connected`, `Status` and names. `Level` is
+already a percentage: a value of `0.5` means 0.5%, not 50%. Unknown/null values
+and disconnected devices must not be rendered as measured zero or stopped.
+
+`POST /v1/commands/water_mode` accepts exactly
+`{"instance":7,"mode":1}`. Instance is an integer in `0..=4294967295`, resolved
+by the client from its selected pump or valve; mode is the integer `0` (auto),
+`1` (always on), or `2` (always off). Strings, booleans, floats, extra fields and
+arbitrary topics are rejected. This command requires the write credential and
+does not depend on inverter-control or a dashboard Home Assistant connection.
+
+IGW requires a currently connected broker and a valid observed `Mode` for that
+exact pump instance; an explicitly disconnected or unknown `Connected` value
+rejects the command. Devices that do not publish `Connected` remain supported.
+The queued request is bound to the connection generation, expires after five
+seconds, and rechecks the target before nonblocking broker-client handoff.
+Disconnects discard pending water publications, preventing reconnect replay.
+
+The only publication is `W/<configured portal>/pump/<instance>/Mode` with
+`{"value":<mode>}`, QoS 0 and no retain flag. Clients must not automatically
+retry. Acceptance confirms queueing only; subsequent native `Mode` and `State`
+readback is authoritative. `dbus-pump` owns automation and physical actions.
+The queue deadline ends at broker-client handoff, not physical execution.

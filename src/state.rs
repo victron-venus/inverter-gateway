@@ -13,6 +13,7 @@ use crate::energy::{is_energy_path, EnergyConfig, EnergyResponse, Reading};
 /// (e.g. system["0/Dc/Battery/Soc"] = 77.5).
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Snapshot {
+    pub capabilities: Capabilities,
     /// Retained inverter-control state. Null means unavailable; it is not HA state.
     pub inverter: Option<serde_json::Map<String, Value>>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
@@ -42,6 +43,17 @@ pub struct Snapshot {
     pub settings: HashMap<String, Value>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Capabilities {
+    pub water_mode: bool,
+}
+
+impl Default for Capabilities {
+    fn default() -> Self {
+        Self { water_mode: true }
+    }
+}
+
 #[derive(Default)]
 struct Telemetry {
     snapshot: Snapshot,
@@ -69,7 +81,32 @@ pub struct Shared {
 pub struct CommandRequest {
     pub topic: String,
     pub payload: String,
-    controller: Option<(u64, Instant)>,
+    guard: Option<CommandGuard>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CommandTarget {
+    Controller,
+    Water(u32),
+}
+
+#[derive(Debug)]
+struct CommandGuard {
+    generation: u64,
+    queued: Instant,
+    target: CommandTarget,
+}
+
+impl CommandRequest {
+    pub fn is_guarded(&self) -> bool {
+        self.guard.is_some()
+    }
+
+    pub fn is_water_command(&self) -> bool {
+        self.guard
+            .as_ref()
+            .is_some_and(|guard| matches!(guard.target, CommandTarget::Water(_)))
+    }
 }
 
 impl From<(String, String)> for CommandRequest {
@@ -77,7 +114,7 @@ impl From<(String, String)> for CommandRequest {
         Self {
             topic,
             payload,
-            controller: None,
+            guard: None,
         }
     }
 }
@@ -97,12 +134,34 @@ impl Shared {
     }
 
     pub fn controller_command(&self, topic: String, payload: String) -> Option<CommandRequest> {
+        self.guarded_command(topic, payload, CommandTarget::Controller)
+    }
+
+    pub fn water_command(
+        &self,
+        topic: String,
+        payload: String,
+        instance: u32,
+    ) -> Option<CommandRequest> {
+        self.guarded_command(topic, payload, CommandTarget::Water(instance))
+    }
+
+    fn guarded_command(
+        &self,
+        topic: String,
+        payload: String,
+        target: CommandTarget,
+    ) -> Option<CommandRequest> {
         let telemetry = self.telemetry.read();
-        (telemetry.connected && telemetry.current_snapshot().inverter.is_some()).then(|| {
+        (telemetry.connected && telemetry.command_target_available(target)).then(|| {
             CommandRequest {
                 topic,
                 payload,
-                controller: Some((telemetry.generation, Instant::now())),
+                guard: Some(CommandGuard {
+                    generation: telemetry.generation,
+                    queued: Instant::now(),
+                    target,
+                }),
             }
         })
     }
@@ -111,11 +170,11 @@ impl Shared {
     /// invalidates old commands even if retained state arrives after reconnect.
     pub fn send_if_current(&self, request: &CommandRequest, send: impl FnOnce()) -> bool {
         let telemetry = self.telemetry.read();
-        if let Some((generation, queued)) = request.controller {
+        if let Some(guard) = &request.guard {
             if !telemetry.connected
-                || generation != telemetry.generation
-                || queued.elapsed() > Duration::from_secs(5)
-                || telemetry.current_snapshot().inverter.is_none()
+                || guard.generation != telemetry.generation
+                || guard.queued.elapsed() > Duration::from_secs(5)
+                || !telemetry.command_target_available(guard.target)
             {
                 return false;
             }
@@ -270,6 +329,23 @@ impl Shared {
 }
 
 impl Telemetry {
+    fn command_target_available(&self, target: CommandTarget) -> bool {
+        match target {
+            CommandTarget::Controller => self.current_snapshot().inverter.is_some(),
+            CommandTarget::Water(instance) => {
+                let pump = &self.snapshot.pump;
+                let valid_mode = pump
+                    .get(&format!("{instance}/Mode"))
+                    .and_then(Value::as_u64)
+                    .is_some_and(|mode| mode <= 2);
+                let connected = pump
+                    .get(&format!("{instance}/Connected"))
+                    .is_none_or(|value| value.as_u64().is_some_and(|connected| connected != 0));
+                valid_mode && connected
+            }
+        }
+    }
+
     fn current_snapshot(&self) -> Snapshot {
         let mut snapshot = self.snapshot.clone();
         if self
@@ -328,6 +404,7 @@ fn path_keep(service: &str, path: &str) -> bool {
             matches!(
                 leaf,
                 "Soc"
+                    | "Connected"
                     | "Dc/0/Voltage"
                     | "Dc/0/Current"
                     | "Dc/0/Power"
@@ -366,8 +443,14 @@ fn path_keep(service: &str, path: &str) -> bool {
                     | "Serial"
             )
         }
-        "tank" => leaf == "Level" || leaf == "ProductName" || leaf == "CustomName",
-        "pump" => leaf == "Status" || leaf == "ProductName" || leaf == "CustomName",
+        "tank" => matches!(
+            leaf,
+            "Level" | "Status" | "Connected" | "ProductName" | "CustomName"
+        ),
+        "pump" => matches!(
+            leaf,
+            "State" | "Mode" | "Status" | "Connected" | "ProductName" | "CustomName"
+        ),
         "ev" | "evcharger" => {
             leaf.contains("Power")
                 || leaf == "Soc"
@@ -381,7 +464,7 @@ fn path_keep(service: &str, path: &str) -> bool {
         "acload" => {
             matches!(
                 leaf,
-                "Ac/Power" | "Ac/L1/Power" | "ProductName" | "CustomName"
+                "Ac/Power" | "Ac/L1/Power" | "Connected" | "ProductName" | "CustomName"
             )
         }
         // GUIv2 notification slots: Notifications/<slot>/<Field>
@@ -648,13 +731,105 @@ mod tests {
         let mut fresh = shared
             .controller_command("inverter/cmd/toggle".into(), "{}".into())
             .unwrap();
-        fresh.controller.as_mut().unwrap().1 = Instant::now() - Duration::from_secs(6);
+        fresh.guard.as_mut().unwrap().queued = Instant::now() - Duration::from_secs(6);
         assert!(!shared.send_if_current(&fresh, || panic!("expired queued publish")));
         let fresh = shared
             .controller_command("inverter/cmd/toggle".into(), "{}".into())
             .unwrap();
         shared.update_inverter(Value::Null);
         assert!(!shared.send_if_current(&fresh, || panic!("unavailable controller publish")));
+    }
+
+    fn update_pump(shared: &Shared, path: &str, value: Value) {
+        shared.update(ParsedUpdate {
+            service: "pump".into(),
+            path: path.into(),
+            value,
+        });
+    }
+
+    #[test]
+    fn water_commands_require_native_mode_and_revalidate_target_before_handoff() {
+        let shared = Shared::new();
+        let request =
+            || shared.water_command("W/test/pump/2/Mode".into(), "{\"value\":1}".into(), 2);
+        assert!(request().is_none());
+        shared.set_connected(true);
+        assert!(request().is_none());
+        update_pump(&shared, "1/Mode", json!(0));
+        assert!(
+            request().is_none(),
+            "a different pump cannot authorize this target"
+        );
+        for mode in [
+            Value::Null,
+            json!("0"),
+            json!(false),
+            json!(0.0),
+            json!(-1),
+            json!(3),
+        ] {
+            update_pump(&shared, "2/Mode", mode);
+            assert!(request().is_none());
+        }
+        update_pump(&shared, "2/Mode", json!(0));
+        let queued = request().unwrap();
+        assert!(shared.snapshot().unwrap().inverter.is_none());
+        assert!(shared.send_if_current(&queued, || {}));
+        update_pump(&shared, "2/Mode", Value::Null);
+        assert!(!shared.send_if_current(&queued, || panic!("unknown mode publish")));
+        update_pump(&shared, "2/Mode", json!(2));
+        for connected in [json!(0), Value::Null, json!("1"), json!(false)] {
+            update_pump(&shared, "2/Connected", connected);
+            assert!(request().is_none());
+            assert!(!shared.send_if_current(&queued, || panic!("unavailable pump publish")));
+        }
+        update_pump(&shared, "2/Connected", json!(1));
+        let mut fresh = request().unwrap();
+        fresh.guard.as_mut().unwrap().queued = Instant::now() - Duration::from_secs(6);
+        assert!(!shared.send_if_current(&fresh, || panic!("expired water publish")));
+        update_pump(&shared, "2", Value::Null);
+        assert!(request().is_none());
+        assert!(!shared.send_if_current(&queued, || panic!("removed device publish")));
+        update_pump(&shared, "2/Mode", json!(0));
+        let queued = request().unwrap();
+        shared.set_connected(false);
+        assert!(!shared.send_if_current(&queued, || panic!("disconnected water publish")));
+        shared.set_connected(true);
+        update_pump(&shared, "2/Mode", json!(0));
+        assert!(!shared.send_if_current(&queued, || panic!("replayed water publish")));
+        assert!(shared.send_if_current(&request().unwrap(), || {}));
+    }
+
+    #[test]
+    fn snapshot_advertises_water_support_and_preserves_native_units_and_unknowns() {
+        let shared = Shared::new();
+        shared.set_connected(true);
+        for (service, path, value) in [
+            ("tank", "21/Level", json!(0.5)),
+            ("tank", "21/Connected", json!(1)),
+            ("pump", "2/State", json!(0)),
+            ("pump", "2/Mode", json!(0)),
+            ("pump", "2/Connected", json!(1)),
+            ("acload", "71/Connected", json!(0)),
+            ("battery", "289/Connected", json!(0)),
+        ] {
+            shared.update(ParsedUpdate {
+                service: service.into(),
+                path: path.into(),
+                value,
+            });
+        }
+        let snapshot = serde_json::to_value(shared.snapshot().unwrap()).unwrap();
+        assert_eq!(snapshot["capabilities"]["water_mode"], true);
+        assert_eq!(snapshot["tank"]["21/Level"], 0.5);
+        assert_eq!(snapshot["pump"]["2/State"], 0);
+        assert_eq!(snapshot["pump"]["2/Mode"], 0);
+        assert_eq!(snapshot["pump"]["2/Connected"], 1);
+        assert_eq!(snapshot["acload"]["71/Connected"], 0);
+        assert_eq!(snapshot["battery"]["289/Connected"], 0);
+        update_pump(&shared, "2/State", Value::Null);
+        assert_eq!(shared.snapshot().unwrap().pump["2/State"], Value::Null);
     }
 
     #[test]
