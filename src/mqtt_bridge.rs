@@ -99,6 +99,15 @@ impl MqttBridge {
         {
             warn!(error = %e, "inverter-control subscribe failed");
         }
+        if let Err(e) = client
+            .subscribe(
+                format!("{inverter_prefix}/setpoint_override"),
+                QoS::AtLeastOnce,
+            )
+            .await
+        {
+            warn!(error = %e, "setpoint override status subscribe failed");
+        }
     }
 
     async fn run_loop(
@@ -139,6 +148,15 @@ impl MqttBridge {
                         if let Some(value) = Self::parse_inverter(&publish.payload) {
                             shared.update_inverter(value);
                         }
+                        continue;
+                    }
+                    if publish.topic == format!("{inverter_prefix}/setpoint_override") {
+                        // Invalid status must not leave a previous confirmed
+                        // value visible or keep an already queued command valid.
+                        shared.update_setpoint_override(
+                            Self::parse_setpoint_override(&publish.payload)
+                                .unwrap_or(serde_json::Value::Null),
+                        );
                         continue;
                     }
                     if let Some(update) =
@@ -203,10 +221,11 @@ impl MqttBridge {
                         let topic = &request.topic;
                         let payload = &request.payload;
                         debug!(topic = %topic, "publishing command");
-                        // Water overrides and the legacy ESS toggle must not
+                        // Overrides and the legacy ESS toggle must not
                         // request redelivery after their originating state changes.
                         let qos = if request.is_water_command()
-                            || topic == &format!("{inverter_prefix}/cmd/ess_mode") {
+                            || topic == &format!("{inverter_prefix}/cmd/ess_mode")
+                            || topic == &format!("{inverter_prefix}/cmd/setpoint_override") {
                             QoS::AtMostOnce
                         } else {
                             QoS::AtLeastOnce
@@ -265,6 +284,23 @@ impl MqttBridge {
         }
         let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
         (value.is_object() || value.is_null()).then_some(value)
+    }
+
+    fn parse_setpoint_override(payload: &[u8]) -> Option<serde_json::Value> {
+        let value = Self::parse_inverter(payload)?;
+        if value.is_null() {
+            return Some(value);
+        }
+        let object = value.as_object()?;
+        let watts = object.get("value")?;
+        let error = object.get("last_error")?;
+        let request_id = object.get("request_id")?;
+        let valid_watts =
+            watts.is_null() || watts.as_i64().is_some_and(|v| i32::try_from(v).is_ok());
+        (valid_watts
+            && (error.is_null() || error.is_string())
+            && (request_id.is_null() || request_id.is_string()))
+        .then_some(value)
     }
 
     /// Parse a Victron MQTT topic+payload into a ParsedUpdate.
@@ -586,11 +622,15 @@ mod tests {
                 let mut subscriptions = 0;
                 let mut command = false;
                 let mut keepalive = false;
-                while subscriptions < 14 || !command || !keepalive {
+                let mut override_subscribed = false;
+                while subscriptions < 15 || !command || !keepalive {
                     let (header, body) = read_packet(&mut socket).await.unwrap();
                     match header {
                         0x82 => {
                             assert_eq!(*body.last().unwrap(), 1);
+                            let len = usize::from(u16::from_be_bytes([body[2], body[3]]));
+                            override_subscribed |=
+                                &body[4..4 + len] == b"inverter/setpoint_override";
                             subscriptions += 1;
                             if subscriptions == 1 && round == 0 {
                                 command_tx
@@ -628,6 +668,7 @@ mod tests {
                         other => panic!("Unexpected MQTT packet {other:x}"),
                     }
                 }
+                assert!(override_subscribed);
             })
             .await;
             traffic_ok &= traffic.is_ok();
@@ -674,6 +715,44 @@ mod tests {
                 shared.snapshot().unwrap().inverter.unwrap()["booleans"]["only_charging"],
                 true
             );
+            // A dedicated retained acknowledgement is visible without waiting
+            // for another full inverter/state publication.
+            let topic = b"inverter/setpoint_override";
+            let payload = b"{\"value\":-25,\"last_error\":null,\"request_id\":\"test\"}";
+            let mut packet = vec![0x31, (2 + topic.len() + payload.len()) as u8];
+            packet.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+            packet.extend_from_slice(topic);
+            packet.extend_from_slice(payload);
+            socket.write_all(&packet).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while shared.snapshot().unwrap().inverter.unwrap()["setpoint_override"]
+                    ["request_id"]
+                    != "test"
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                shared.snapshot().unwrap().inverter.unwrap()["setpoint_override"]["request_id"],
+                "test"
+            );
+            // A malformed dedicated ACK invalidates the previous status;
+            // it cannot leave an old acknowledgement available to clients.
+            let payload = b"{}";
+            let mut packet = vec![0x31, (2 + topic.len() + payload.len()) as u8];
+            packet.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+            packet.extend_from_slice(topic);
+            packet.extend_from_slice(payload);
+            socket.write_all(&packet).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !shared.snapshot().unwrap().inverter.unwrap()["setpoint_override"].is_null() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
             if round == 0 {
                 drop(socket);
                 tokio::time::timeout(Duration::from_secs(1), async {
@@ -750,7 +829,7 @@ mod tests {
     async fn disconnect_discards_controller_requests_already_in_mqtt_queue() {
         let opts = MqttOptions::new("discard-test", "127.0.0.1", 1883);
         let (client, mut eventloop) = AsyncClient::new(opts, 8);
-        for action in ["toggle", "dry_run", "ess_mode"] {
+        for action in ["toggle", "dry_run", "ess_mode", "setpoint_override"] {
             client
                 .try_publish(
                     format!("house/control/cmd/{action}"),
@@ -819,6 +898,99 @@ mod tests {
         MqttBridge::handle_disconnect(&shared, &mut eventloop, "inverter");
         assert!(!eventloop.pending.iter().any(|request| matches!(request,
             rumqttc::Request::Publish(p) if MqttBridge::is_water_write_topic(&p.topic))));
+    }
+
+    #[test]
+    fn override_status_requires_complete_typed_fields_and_accepts_tombstones() {
+        for value in [
+            json!(i32::MIN),
+            json!(i32::MAX),
+            json!(0),
+            serde_json::Value::Null,
+        ] {
+            let status = json!({"value":value,"last_error":null,"request_id":"uuid-1"});
+            assert_eq!(
+                MqttBridge::parse_setpoint_override(status.to_string().as_bytes()),
+                Some(status)
+            );
+        }
+        for payload in [b"".as_slice(), b"null"] {
+            assert_eq!(
+                MqttBridge::parse_setpoint_override(payload),
+                Some(serde_json::Value::Null)
+            );
+        }
+        for invalid in [
+            json!({}),
+            json!({"value":0}),
+            json!({"value":true,"last_error":null,"request_id":null}),
+            json!({"value":1.0,"last_error":null,"request_id":null}),
+            json!({"value":2147483648_i64,"last_error":null,"request_id":null}),
+            json!({"value":null,"last_error":false,"request_id":null}),
+            json!({"value":null,"last_error":null,"request_id":12}),
+        ] {
+            assert!(MqttBridge::parse_setpoint_override(invalid.to_string().as_bytes()).is_none());
+        }
+        assert!(MqttBridge::parse_setpoint_override(b"not json").is_none());
+    }
+
+    #[tokio::test]
+    async fn override_publishes_once_without_retention_or_reconnect_replay() {
+        let (client, mut eventloop) =
+            AsyncClient::new(MqttOptions::new("override-test", "127.0.0.1", 1883), 16);
+        let shared = Shared::new();
+        shared.set_connected(true);
+        shared.update_inverter(json!({"booleans":{}}));
+        let previous = json!({"value":12,"last_error":null,"request_id":"previous"});
+        shared.update_setpoint_override(previous.clone());
+        let request = shared
+            .setpoint_override_command(
+                "site/control/cmd/setpoint_override".into(),
+                "{\"value\":null,\"request_id\":\"stop-id\"}".into(),
+            )
+            .unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(request).unwrap();
+        drop(tx);
+        let (_connected_tx, connected_rx) = tokio::sync::watch::channel(());
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            MqttBridge::send_requests(
+                &client,
+                &shared,
+                "N/test/",
+                "site/control",
+                rx,
+                connected_rx,
+            ),
+        )
+        .await
+        .unwrap();
+        eventloop.clean();
+        let commands: Vec<_> = eventloop
+            .pending
+            .iter()
+            .filter_map(|request| match request {
+                rumqttc::Request::Publish(p) if p.topic == "site/control/cmd/setpoint_override" => {
+                    Some(p)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].qos, QoS::AtMostOnce);
+        assert!(!commands[0].retain);
+        assert_eq!(
+            commands[0].payload.as_ref(),
+            b"{\"value\":null,\"request_id\":\"stop-id\"}"
+        );
+        assert_eq!(
+            shared.snapshot().unwrap().inverter.unwrap()["setpoint_override"],
+            previous
+        );
+        MqttBridge::handle_disconnect(&shared, &mut eventloop, "site/control");
+        assert!(!eventloop.pending.iter().any(|request| matches!(request,
+            rumqttc::Request::Publish(p) if p.topic == "site/control/cmd/setpoint_override")));
     }
 
     #[tokio::test]

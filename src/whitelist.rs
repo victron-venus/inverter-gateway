@@ -26,7 +26,11 @@ fn builtin_whitelist() -> Whitelist {
 
 pub fn is_known(name: &str) -> bool {
     static WL: std::sync::LazyLock<Whitelist> = std::sync::LazyLock::new(builtin_whitelist);
-    WL.contains_key(name) || matches!(name, "toggle" | "dry_run" | "ess_mode" | "water_mode")
+    WL.contains_key(name)
+        || matches!(
+            name,
+            "toggle" | "dry_run" | "ess_mode" | "water_mode" | "setpoint_override"
+        )
 }
 
 const CONTROL_FLAGS: &[&str] = &[
@@ -73,6 +77,28 @@ fn controller_payload(name: &str, body: Value) -> Result<Value, CommandError> {
             Ok(body)
         }
         "ess_mode" if object.is_empty() => Ok(body),
+        "setpoint_override" if object.len() == 2 => {
+            let valid_value = object.get("value").is_some_and(|value| {
+                value.is_null()
+                    || value
+                        .as_i64()
+                        .is_some_and(|value| i32::try_from(value).is_ok())
+            });
+            let valid_id = object
+                .get("request_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| {
+                    !id.is_empty()
+                        && id.len() <= 128
+                        && id.bytes().all(|b| {
+                            b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-')
+                        })
+                });
+            if !valid_value || !valid_id {
+                return Err(invalid());
+            }
+            Ok(body)
+        }
         _ => Err(invalid()),
     }
 }
@@ -112,15 +138,20 @@ pub async fn execute(state: &AppState, name: &str, body: Value) -> Result<(), Co
 
     let request = if name == "water_mode" {
         water_request(state, body)?
-    } else if matches!(name, "toggle" | "dry_run" | "ess_mode") {
+    } else if matches!(
+        name,
+        "toggle" | "dry_run" | "ess_mode" | "setpoint_override"
+    ) {
         let payload = controller_payload(name, body)?;
-        state
-            .shared
-            .controller_command(
-                format!("{}/cmd/{name}", state.cfg.inverter_topic_prefix),
-                payload.to_string(),
-            )
-            .ok_or(CommandError::Unavailable)?
+        let topic = format!("{}/cmd/{name}", state.cfg.inverter_topic_prefix);
+        if name == "setpoint_override" {
+            state
+                .shared
+                .setpoint_override_command(topic, payload.to_string())
+        } else {
+            state.shared.controller_command(topic, payload.to_string())
+        }
+        .ok_or(CommandError::Unavailable)?
     } else {
         let (topic_suffix, payload) = WL
             .get(name)

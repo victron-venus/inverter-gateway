@@ -457,6 +457,153 @@ pub(crate) mod tests {
         assert!(require_auth(&state, &headers).is_err());
     }
 
+    #[tokio::test]
+    async fn setpoint_override_requires_write_auth_and_exact_correlated_payload() {
+        use axum::{body::Body, http::Request};
+        use serde_json::json;
+        use tower::ServiceExt;
+
+        let mut cfg = cfg_with_token("write-secret");
+        cfg.inverter_topic_prefix = "site/control".into();
+        let state = make_state(cfg);
+        state.shared.set_connected(true);
+        let original = json!({"value":null,"last_error":null,"request_id":null});
+        state
+            .shared
+            .update_inverter(json!({"setpoint_override":original}));
+        state.shared.update_setpoint_override(original.clone());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        *state.shared.command_tx.lock() = Some(tx);
+        let app = router(state.clone());
+        let request = |token: Option<&str>, body: serde_json::Value| {
+            let mut req = Request::builder()
+                .method("POST")
+                .uri("/v1/commands/setpoint_override")
+                .header("Content-Type", "application/json");
+            if let Some(token) = token {
+                req = req.header("Authorization", format!("Bearer {token}"));
+            }
+            req.body(Body::from(body.to_string())).unwrap()
+        };
+        for token in [None, Some("read-secret"), Some("wrong")] {
+            let response = app
+                .clone()
+                .oneshot(request(token, json!({"value":0,"request_id":"id"})))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert!(rx.try_recv().is_err());
+        }
+        for invalid in [
+            json!({"value":true,"request_id":"id"}),
+            json!({"value":1.0,"request_id":"id"}),
+            json!({"value":"1","request_id":"id"}),
+            json!({"value":2147483648_i64,"request_id":"id"}),
+            json!({"value":-2147483649_i64,"request_id":"id"}),
+            json!({"request_id":"id"}),
+            json!({"value":null}),
+            json!({"value":null,"request_id":null}),
+            json!({"value":null,"request_id":""}),
+            json!({"value":null,"request_id":"x".repeat(129)}),
+            json!({"value":null,"request_id":"line\nbreak"}),
+            json!({"value":null,"request_id":"../topic"}),
+            json!({"value":null,"request_id":"тест"}),
+            json!({"value":null,"request_id":"id","topic":"arbitrary"}),
+            json!([0, "id"]),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(request(Some("write-secret"), invalid))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(rx.try_recv().is_err());
+        }
+        for value in [
+            json!(i32::MIN),
+            json!(i32::MAX),
+            json!(0),
+            serde_json::Value::Null,
+        ] {
+            let body = json!({"value":value,"request_id":"request:abc-123._"});
+            let response = app
+                .clone()
+                .oneshot(request(Some("write-secret"), body.clone()))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let command = rx.try_recv().unwrap();
+            assert_eq!(command.topic, "site/control/cmd/setpoint_override");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&command.payload).unwrap(),
+                body
+            );
+            assert!(command.is_guarded());
+            assert!(state.shared.send_if_current(&command, || {}));
+            assert!(rx.try_recv().is_err());
+            assert_eq!(
+                state.shared.snapshot().unwrap().inverter.unwrap()["setpoint_override"],
+                original,
+                "enqueue success must not invent a daemon acknowledgement"
+            );
+        }
+        let body = json!({"value":null,"request_id":"x".repeat(128)});
+        assert_eq!(
+            app.clone()
+                .oneshot(request(Some("write-secret"), body))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        rx.try_recv().unwrap();
+        // Both token classes can read the real status and capability.
+        for token in ["read-secret", "write-secret"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/v1/snapshot")
+                        .header("Authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let snapshot: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(snapshot["capabilities"]["setpoint_override"], true);
+            assert_eq!(snapshot["inverter"]["setpoint_override"], original);
+        }
+        state.shared.update_inverter(serde_json::Value::Null);
+        assert_eq!(
+            app.clone()
+                .oneshot(request(
+                    Some("write-secret"),
+                    json!({"value":0,"request_id":"id"})
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        state.shared.set_connected(false);
+        assert_eq!(
+            app.oneshot(request(
+                Some("write-secret"),
+                json!({"value":null,"request_id":"id"})
+            ))
+            .await
+            .unwrap()
+            .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
     #[test]
     fn auth_rejects_wrong_token() {
         let state = make_state(cfg_with_token("secret"));
@@ -605,7 +752,7 @@ pub(crate) mod tests {
         let data = frame.strip_prefix("data: ").unwrap().trim();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(data).unwrap(),
-            serde_json::json!({"capabilities":{"water_mode":true}, "inverter": null, "battery": {"0/Dc/0/Voltage": 49}})
+            serde_json::json!({"capabilities":{"water_mode":true,"setpoint_override":true}, "inverter": null, "battery": {"0/Dc/0/Voltage": 49}})
         );
         state.shared.set_connected(false);
         assert!(

@@ -232,6 +232,7 @@ this repo).
 | `silence_alarm` | `W/<portal_id>/vebus/0/Alarm` | `{"SilenceAlarm":"1"}` | Acknowledge active alarm |
 | `acknowledge_all_notifications` | `W/<portal_id>/platform/0/Notifications/AcknowledgeAll` | `{"value":1}` | Dismiss Venus GUIv2 banners (per-slot ack is often ignored) |
 | `water_mode` | `W/<portal_id>/pump/<instance>/Mode` | `{"value":0|1|2}` | Validated native pump/valve override; requires observed device state and write credentials |
+| `setpoint_override` | `<INVERTER_TOPIC_PREFIX>/cmd/setpoint_override` | `{"value":<int32 or null>,"request_id":"<identifier>"}` | Explicit daemon override; requires current controller and dedicated acknowledgement status |
 
 Snapshot also includes `platform` leaves (`<inst>/Notifications/<slot>/{Description,DeviceName,Service,DateTime,Type,Active,Acknowledged,Silenced}`) plus `Alarms/*` under `vebus`/`battery` so remote dashboards can render the same banners as LAN MQTT without a Cerbo client.
 
