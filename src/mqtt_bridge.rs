@@ -156,15 +156,13 @@ impl MqttBridge {
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => {
                     info!("mqtt disconnected by broker");
-                    shared.set_connected(false);
-                    Self::discard_controller_replay(&mut eventloop, inverter_prefix);
+                    Self::handle_disconnect(shared, &mut eventloop, inverter_prefix);
                 }
                 Ok(Event::Incoming(Packet::PingResp)) | Ok(Event::Outgoing(_)) => {}
                 Ok(Event::Incoming(other)) => debug!(packet = ?other, "mqtt packet"),
                 Err(e) => {
                     error!(error = %e, "mqtt connection error");
-                    shared.set_connected(false);
-                    Self::discard_controller_replay(&mut eventloop, inverter_prefix);
+                    Self::handle_disconnect(shared, &mut eventloop, inverter_prefix);
                     tokio::time::sleep(Duration::from_secs(5)).await;
                 }
             }
@@ -229,6 +227,16 @@ impl MqttBridge {
                     }
                 }
             }
+        }
+    }
+
+    fn handle_disconnect(shared: &Shared, eventloop: &mut EventLoop, inverter_prefix: &str) {
+        let was_connected = shared.is_connected();
+        shared.set_connected(false);
+        // On a failed reconnect, newly queued legacy requests must stay in
+        // requests_rx: a clean-session ConnAck discards EventLoop::pending.
+        if was_connected {
+            Self::discard_controller_replay(eventloop, inverter_prefix);
         }
     }
 
@@ -710,6 +718,24 @@ mod tests {
         for invalid in [b"[]".as_slice(), b"false", b"1", b"invalid"] {
             assert!(MqttBridge::parse_inverter(invalid).is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn failed_reconnect_preserves_new_legacy_requests() {
+        let opts = MqttOptions::new("failed-reconnect-test", "127.0.0.1", 1883);
+        let (client, mut eventloop) = AsyncClient::new(opts, 8);
+        let shared = Shared::new();
+        client
+            .try_publish("W/test/vebus/0/Alarm", QoS::AtLeastOnce, false, "{}")
+            .unwrap();
+        MqttBridge::handle_disconnect(&shared, &mut eventloop, "inverter");
+        assert!(eventloop.pending.is_empty());
+        // A later successful handshake can still consume the native request.
+        eventloop.clean();
+        assert_eq!(eventloop.pending.len(), 1);
+        assert!(
+            matches!(&eventloop.pending[0], rumqttc::Request::Publish(p) if p.topic == "W/test/vebus/0/Alarm")
+        );
     }
 
     #[tokio::test]

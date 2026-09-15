@@ -54,9 +54,11 @@ reconnect invalidation, subscription delivery with a one-item MQTT queue, and
 authenticated command validation. These tests use a local broker fixture and
 an in-memory command queue; they do not switch a physical inverter.
 
-Controller commands queued for more than five seconds are discarded. Each request
+Controller commands waiting in IGW's command queue for more than five seconds are
+discarded before handoff to rumqttc. Each request
 is bound to the current MQTT connection generation and requires fresh controller
 state when the bridge hands it to the broker client. A disconnect drops pending
 controller publications before reconnecting; legacy native alarm commands retain
 their existing behavior. HTTP acceptance acknowledges queueing, not execution by
-the physical controller.
+the physical controller. The five-second limit ends at broker-client handoff;
+MQTT and the daemon do not provide an execution deadline or an execution receipt.
