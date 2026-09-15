@@ -340,7 +340,7 @@ impl Telemetry {
                     .is_some_and(|mode| mode <= 2);
                 let connected = pump
                     .get(&format!("{instance}/Connected"))
-                    .is_none_or(|value| value.as_u64().is_some_and(|connected| connected != 0));
+                    .is_none_or(|value| value.as_u64().is_some_and(|connected| connected == 1));
                 valid_mode && connected
             }
         }
