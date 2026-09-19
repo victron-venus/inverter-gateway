@@ -238,6 +238,7 @@ impl Alarms {
         Report {
             text: messages.join(" "),
             status: self.status,
+            brief_text: None,
         }
     }
 }

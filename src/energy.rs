@@ -15,6 +15,9 @@ pub struct EnergyConfig {
     pub solar_power_sources: Vec<String>,
     pub solar_today_sources: Vec<String>,
     pub alarm_sources: Vec<String>,
+    pub load_power_sources: Vec<String>,
+    pub grid_power_sources: Vec<String>,
+    pub battery_power_sources: Vec<String>,
     pub max_age: Duration,
 }
 
@@ -25,12 +28,61 @@ impl Default for EnergyConfig {
             solar_power_sources: vec![],
             solar_today_sources: vec![],
             alarm_sources: vec![],
+            load_power_sources: vec![],
+            grid_power_sources: vec![],
+            battery_power_sources: vec![],
             max_age: Duration::from_secs(120),
         }
     }
 }
 
 impl EnergyConfig {
+    pub fn with_flow_sources(
+        mut self,
+        load: &str,
+        grid: &str,
+        battery: &str,
+    ) -> Result<Self, ConfigError> {
+        self.load_power_sources = parse_sources(load, MetricKind::LoadPower)?;
+        self.grid_power_sources = parse_sources(grid, MetricKind::GridPower)?;
+        self.battery_power_sources = parse_sources(battery, MetricKind::BatteryPower)?;
+        if self.battery_power_sources.len() > 1 {
+            return Err(
+                "GATEWAY_ENERGY_BATTERY_POWER_SOURCE must select one system battery".into(),
+            );
+        }
+        let mut instances = self
+            .load_power_sources
+            .iter()
+            .chain(&self.grid_power_sources)
+            .chain(&self.battery_power_sources)
+            .filter_map(|source| source.split('/').nth(1));
+        if let Some(first) = instances.next() {
+            if instances.any(|instance| instance != first) {
+                return Err("energy flow sources must use one system instance".into());
+            }
+        }
+        for source in &self.load_power_sources {
+            if let Some((prefix, phase)) = source.split_once("/Ac/Consumption/") {
+                for component in ["ConsumptionOnInput", "ConsumptionOnOutput"] {
+                    if self
+                        .load_power_sources
+                        .contains(&format!("{prefix}/Ac/{component}/{phase}"))
+                    {
+                        return Err("AC consumption must not combine a phase total with its input or output component".into());
+                    }
+                }
+            }
+        }
+        Ok(self)
+    }
+
+    fn flow_enabled(&self) -> bool {
+        !self.load_power_sources.is_empty()
+            || !self.grid_power_sources.is_empty()
+            || !self.battery_power_sources.is_empty()
+    }
+
     pub fn with_alarm_sources(mut self, raw: &str) -> Result<Self, ConfigError> {
         self.alarm_sources = parse_sources(raw, MetricKind::Alarm)?;
         Ok(self)
@@ -62,6 +114,9 @@ impl EnergyConfig {
             solar_power_sources,
             solar_today_sources,
             alarm_sources: vec![],
+            load_power_sources: vec![],
+            grid_power_sources: vec![],
+            battery_power_sources: vec![],
             max_age: Duration::from_secs(max_age),
         })
     }
@@ -73,6 +128,9 @@ enum MetricKind {
     Power,
     Today,
     Alarm,
+    LoadPower,
+    GridPower,
+    BatteryPower,
 }
 
 fn metric_kind(service: &str, path: &str) -> Option<MetricKind> {
@@ -86,6 +144,7 @@ fn metric_kind(service: &str, path: &str) -> Option<MetricKind> {
     }
     match (service, leaf) {
         ("system", "Dc/Battery/Soc") | ("battery" | "vebus", "Soc") => Some(MetricKind::Battery),
+        ("system", "Dc/Battery/Power") => Some(MetricKind::BatteryPower),
         ("system", "Dc/Pv/Power")
         | ("solarcharger", "Yield/Power")
         | ("pvinverter", "Ac/Power" | "Ac/L1/Power" | "Ac/L2/Power" | "Ac/L3/Power") => {
@@ -99,12 +158,25 @@ fn metric_kind(service: &str, path: &str) -> Option<MetricKind> {
         }
         ("system", leaf) => {
             let mut parts = leaf.split('/');
-            (parts.next() == Some("Ac")
-                && matches!(parts.next(), Some("PvOnGrid" | "PvOnOutput" | "PvOnGenset"))
-                && matches!(parts.next(), Some("L1" | "L2" | "L3" | "Total"))
-                && parts.next() == Some("Power")
-                && parts.next().is_none())
-            .then_some(MetricKind::Power)
+            if parts.next() != Some("Ac") {
+                return None;
+            }
+            let family = parts.next()?;
+            let phase = parts.next()?;
+            if parts.next() != Some("Power") || parts.next().is_some() {
+                return None;
+            }
+            match (family, phase) {
+                ("PvOnGrid" | "PvOnOutput" | "PvOnGenset", "L1" | "L2" | "L3" | "Total") => {
+                    Some(MetricKind::Power)
+                }
+                (
+                    "Consumption" | "ConsumptionOnInput" | "ConsumptionOnOutput",
+                    "L1" | "L2" | "L3",
+                ) => Some(MetricKind::LoadPower),
+                ("Grid", "L1" | "L2" | "L3") => Some(MetricKind::GridPower),
+                _ => None,
+            }
         }
         _ => None,
     }
@@ -202,12 +274,21 @@ pub struct Metrics {
     pub battery_soc: Metric,
     pub solar_power: Metric,
     pub solar_today: Metric,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_power: Option<Metric>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grid_power: Option<Metric>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery_power: Option<Metric>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct Report {
     pub text: String,
     pub status: Status,
+    /// Optional concise speech, with the same freshness and alarm disclosures.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brief_text: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -217,6 +298,8 @@ pub struct Reports {
     pub solar_today: Report,
     pub alarms: Report,
     pub status: Report,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flow: Option<Report>,
 }
 
 #[derive(Debug, Serialize)]
@@ -261,6 +344,44 @@ impl EnergyResponse {
                 now,
                 cfg.max_age,
             ),
+            load_power: cfg.flow_enabled().then(|| {
+                metric(
+                    &cfg.load_power_sources,
+                    "W",
+                    connected,
+                    readings,
+                    now,
+                    cfg.max_age,
+                )
+            }),
+            grid_power: cfg.flow_enabled().then(|| {
+                signed_power_metric(
+                    &cfg.grid_power_sources,
+                    connected,
+                    readings,
+                    now,
+                    cfg.max_age,
+                )
+            }),
+            battery_power: cfg.flow_enabled().then(|| {
+                signed_power_metric(
+                    &cfg.battery_power_sources,
+                    connected,
+                    readings,
+                    now,
+                    cfg.max_age,
+                )
+            }),
+        };
+        let flow = match (
+            &metrics.load_power,
+            &metrics.grid_power,
+            &metrics.battery_power,
+        ) {
+            (Some(load), Some(grid), Some(battery)) => {
+                Some(flow_report(load, grid, battery, connected))
+            }
+            _ => None,
         };
         let battery = report(&metrics.battery_soc, "Battery charge", connected);
         let solar = report(&metrics.solar_power, "Solar power", connected);
@@ -278,6 +399,31 @@ impl EnergyResponse {
         let alarms = Alarms::build(cfg, connected, readings, now);
         let alarm_report = alarms.report(connected);
         let status = Report {
+            brief_text: Some(if connected {
+                let mut parts = vec![
+                    brief_metric(&metrics.battery_soc, &battery, "Battery"),
+                    brief_metric(&metrics.solar_power, &solar, "Solar"),
+                    brief_metric(
+                        &metrics.solar_today,
+                        &solar_today,
+                        if daily_label == "Solar charger generation today" {
+                            "Solar chargers today"
+                        } else {
+                            "Solar today"
+                        },
+                    ),
+                ];
+                // Retain the complete bounded alarm report, including incomplete coverage.
+                if alarms.active.is_empty() {
+                    parts.push(alarm_report.text.clone());
+                } else {
+                    parts.insert(0, alarm_report.text.clone());
+                }
+                parts.join(" ")
+            } else {
+                "Energy data is unavailable because the gateway is disconnected from Cerbo GX."
+                    .into()
+            }),
             status: if connected {
                 worst_status([
                     battery.status,
@@ -313,6 +459,7 @@ impl EnergyResponse {
                 solar_today,
                 alarms: alarm_report,
                 status,
+                flow,
             },
         }
     }
@@ -325,6 +472,28 @@ fn metric(
     readings: &HashMap<String, Reading>,
     now: Instant,
     max_age: Duration,
+) -> Metric {
+    collect_metric(sources, unit, connected, readings, now, max_age, false)
+}
+
+fn signed_power_metric(
+    sources: &[String],
+    connected: bool,
+    readings: &HashMap<String, Reading>,
+    now: Instant,
+    max_age: Duration,
+) -> Metric {
+    collect_metric(sources, "W", connected, readings, now, max_age, true)
+}
+
+fn collect_metric(
+    sources: &[String],
+    unit: &'static str,
+    connected: bool,
+    readings: &HashMap<String, Reading>,
+    now: Instant,
+    max_age: Duration,
+    signed: bool,
 ) -> Metric {
     let mut metric = Metric {
         value: None,
@@ -352,7 +521,11 @@ fn metric(
         };
         oldest = oldest.max(now.saturating_duration_since(reading.received_at));
         match reading.value.as_f64() {
-            Some(value) if value.is_finite() && value >= 0.0 && (unit != "%" || value <= 100.0) => {
+            Some(value)
+                if value.is_finite()
+                    && (signed || value >= 0.0)
+                    && (unit != "%" || value <= 100.0) =>
+            {
                 sum += value
             }
             _ => unavailable = true,
@@ -402,26 +575,30 @@ fn decimal(value: f64, digits: usize) -> String {
     }
 }
 
+fn spoken_amount(value: f64, unit: &str) -> String {
+    let (amount, unit) = match unit {
+        "%" => (decimal(value, 1), "percent"),
+        "W" if value >= 1000.0 => (decimal(value / 1000.0, 2), "kilowatts"),
+        "W" => (decimal(value, 0), "watts"),
+        _ => (decimal(value, 2), "kilowatt hours"),
+    };
+    let unit = if amount == "1" {
+        match unit {
+            "watts" => "watt",
+            "kilowatts" => "kilowatt",
+            "kilowatt hours" => "kilowatt hour",
+            _ => unit,
+        }
+    } else {
+        unit
+    };
+    format!("{amount} {unit}")
+}
+
 fn report(metric: &Metric, label: &str, connected: bool) -> Report {
     let text = match (metric.status, metric.value) {
         (Status::Fresh, Some(value)) => {
-            let (amount, unit) = match metric.unit {
-                "%" => (decimal(value, 1), "percent"),
-                "W" if value >= 1000.0 => (decimal(value / 1000.0, 2), "kilowatts"),
-                "W" => (decimal(value, 0), "watts"),
-                _ => (decimal(value, 2), "kilowatt hours"),
-            };
-            let unit = if amount == "1" {
-                match unit {
-                    "watts" => "watt",
-                    "kilowatts" => "kilowatt",
-                    "kilowatt hours" => "kilowatt hour",
-                    _ => unit,
-                }
-            } else {
-                unit
-            };
-            format!("{label} is {amount} {unit}.")
+            format!("{label} is {}.", spoken_amount(value, metric.unit))
         }
         (Status::Unconfigured, _) => format!("{label} is not configured."),
         (Status::Stale, _) => {
@@ -435,6 +612,67 @@ fn report(metric: &Metric, label: &str, connected: bool) -> Report {
     Report {
         text,
         status: metric.status,
+        brief_text: None,
+    }
+}
+
+fn brief_metric(metric: &Metric, detailed: &Report, label: &str) -> String {
+    if let (Status::Fresh, Some(value)) = (metric.status, metric.value) {
+        format!("{label} {}.", spoken_amount(value, metric.unit))
+    } else {
+        // Do not shorten away why a number cannot be spoken as current.
+        detailed.text.clone()
+    }
+}
+
+fn flow_report(load: &Metric, grid: &Metric, battery: &Metric, connected: bool) -> Report {
+    if !connected {
+        return Report {
+            text: "Energy flow is unavailable because the gateway is disconnected from Cerbo GX."
+                .into(),
+            status: Status::Unavailable,
+            brief_text: None,
+        };
+    }
+    let load_report = report(load, "Configured AC consumption", connected);
+    let grid_report = directional_power_report(grid, true);
+    let battery_report = directional_power_report(battery, false);
+    Report {
+        text: format!(
+            "{} {} {}",
+            load_report.text, grid_report.text, battery_report.text
+        ),
+        status: worst_status([load.status, grid.status, battery.status]),
+        brief_text: None,
+    }
+}
+
+fn directional_power_report(metric: &Metric, grid: bool) -> Report {
+    let label = if grid {
+        "Net grid power"
+    } else {
+        "System battery power"
+    };
+    let (Status::Fresh, Some(value)) = (metric.status, metric.value) else {
+        return report(metric, label, true);
+    };
+    let magnitude = value.abs();
+    let amount = if magnitude > 0.0 && magnitude < 1.0 {
+        "less than 1 watt".into()
+    } else {
+        spoken_amount(magnitude, "W")
+    };
+    let text = match (grid, value.total_cmp(&0.0)) {
+        (_, _) if value == 0.0 => format!("{label} is 0 watts."),
+        (true, std::cmp::Ordering::Greater) => format!("Net grid import is {amount}."),
+        (true, _) => format!("Net grid export is {amount}."),
+        (false, std::cmp::Ordering::Greater) => format!("System battery is charging at {amount}."),
+        (false, _) => format!("System battery is discharging at {amount}."),
+    };
+    Report {
+        text,
+        status: metric.status,
+        brief_text: None,
     }
 }
 
@@ -702,5 +940,365 @@ mod tests {
             .text
             .contains("times ten to the power of"));
         assert!(response.reports.status.text.len() <= 1200);
+    }
+
+    #[test]
+    fn brief_status_shortens_only_fresh_values_and_prioritizes_alerts() {
+        let now = Instant::now();
+        let cfg = EnergyConfig::parse(
+            "system/0/Dc/Battery/Soc",
+            "system/0/Dc/Pv/Power",
+            "solarcharger/1/History/Daily/0/Yield",
+            "120",
+        )
+        .unwrap()
+        .with_alarm_sources("battery/1/Alarms/LowVoltage")
+        .unwrap();
+        let mut data = readings(
+            now,
+            &[
+                ("system/0/Dc/Battery/Soc", json!(70), 0),
+                ("system/0/Dc/Pv/Power", json!(2000), 0),
+                ("solarcharger/1/History/Daily/0/Yield", json!(3.2), 0),
+                ("battery/1/Alarms/LowVoltage", json!(0), 0),
+            ],
+        );
+        let healthy = EnergyResponse::build(&cfg, true, &data, now);
+        assert_eq!(healthy.reports.status.brief_text.as_deref(), Some(
+            "Battery 70 percent. Solar 2 kilowatts. Solar chargers today 3.2 kilowatt hours. No active alarms in the monitored sources."
+        ));
+        assert!(
+            healthy.reports.status.brief_text.as_ref().unwrap().len()
+                < healthy.reports.status.text.len()
+        );
+        data.get_mut("battery/1/Alarms/LowVoltage").unwrap().value = json!(2);
+        let alert = EnergyResponse::build(&cfg, true, &data, now);
+        assert!(alert
+            .reports
+            .status
+            .brief_text
+            .unwrap()
+            .starts_with("Alarm: Low battery voltage."));
+        assert!(alert.reports.status.text.starts_with("Battery charge is"));
+    }
+
+    #[test]
+    fn brief_status_retains_missing_stale_unconfigured_and_alarm_coverage() {
+        let now = Instant::now();
+        let cfg = EnergyConfig::parse("system/0/Dc/Battery/Soc", "system/0/Dc/Pv/Power", "", "120")
+            .unwrap()
+            .with_alarm_sources("battery/1/Alarms/LowVoltage,battery/1/Alarms/HighVoltage")
+            .unwrap();
+        let data = readings(
+            now,
+            &[
+                ("system/0/Dc/Battery/Soc", json!(70), 121),
+                ("battery/1/Alarms/LowVoltage", json!(2), 0),
+            ],
+        );
+        let response = EnergyResponse::build(&cfg, true, &data, now);
+        let brief = response.reports.status.brief_text.as_ref().unwrap();
+        for report in [
+            &response.reports.battery,
+            &response.reports.solar,
+            &response.reports.solar_today,
+            &response.reports.alarms,
+        ] {
+            assert!(brief.contains(&report.text));
+        }
+        assert_eq!(response.reports.status.status, Status::Unavailable);
+        assert!(!brief.contains("70 percent"));
+        let offline = EnergyResponse::build(&cfg, false, &data, now);
+        assert_eq!(
+            offline.reports.status.brief_text.as_ref(),
+            Some(&offline.reports.status.text)
+        );
+    }
+
+    #[test]
+    fn optional_contract_is_additive_and_flow_is_absent_by_default() {
+        let response = EnergyResponse::build(
+            &EnergyConfig::default(),
+            true,
+            &HashMap::new(),
+            Instant::now(),
+        );
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["schema_version"], 1);
+        assert!(json["reports"]["status"]["brief_text"].is_string());
+        assert!(json["reports"]["battery"].get("brief_text").is_none());
+        assert!(json["reports"].get("flow").is_none());
+        for key in ["load_power", "grid_power", "battery_power"] {
+            assert!(json["metrics"].get(key).is_none());
+        }
+    }
+
+    #[test]
+    fn synthetic_flow_fixture_matches_the_real_response_serializer() {
+        let now = Instant::now();
+        let cfg = EnergyConfig::parse(
+            "system/0/Dc/Battery/Soc",
+            "system/0/Dc/Pv/Power",
+            "solarcharger/1/History/Daily/0/Yield",
+            "120",
+        )
+        .unwrap()
+        .with_alarm_sources("battery/1/Alarms/LowVoltage")
+        .unwrap()
+        .with_flow_sources(
+            "system/0/Ac/ConsumptionOnOutput/L1/Power",
+            "system/0/Ac/Grid/L1/Power",
+            "system/0/Dc/Battery/Power",
+        )
+        .unwrap();
+        let data = readings(
+            now,
+            &[
+                ("system/0/Dc/Battery/Soc", json!(70), 2),
+                ("system/0/Dc/Pv/Power", json!(2500), 3),
+                ("solarcharger/1/History/Daily/0/Yield", json!(4.5), 4),
+                ("system/0/Ac/ConsumptionOnOutput/L1/Power", json!(1250), 2),
+                ("system/0/Ac/Grid/L1/Power", json!(-500), 2),
+                ("system/0/Dc/Battery/Power", json!(750), 2),
+                ("battery/1/Alarms/LowVoltage", json!(0), 1),
+            ],
+        );
+        let mut response = EnergyResponse::build(&cfg, true, &data, now);
+        // This fixture contains only synthetic values; no host clock or installation data.
+        response.generated_at = 1_700_000_000;
+        let expected: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/energy-flow-v1.json")).unwrap();
+        assert_eq!(serde_json::to_value(response).unwrap(), expected);
+    }
+
+    #[test]
+    fn brief_preserves_bounded_alarm_summary_with_full_failure_notices() {
+        let now = Instant::now();
+        let mut cfg = EnergyConfig::parse(
+            "system/0/Dc/Battery/Soc",
+            "system/0/Dc/Pv/Power",
+            "solarcharger/1/History/Daily/0/Yield",
+            "120",
+        )
+        .unwrap();
+        let mut data = HashMap::new();
+        for instance in 0..20 {
+            let source = format!("battery/{instance}/Alarms/HighDischargeCurrent");
+            cfg.alarm_sources.push(source.clone());
+            data.insert(
+                source,
+                Reading {
+                    value: json!(2),
+                    received_at: now,
+                },
+            );
+        }
+        // An absent source makes alarm coverage incomplete while retaining confirmed alerts.
+        cfg.alarm_sources
+            .push("battery/99/Alarms/LowVoltage".into());
+        let response = EnergyResponse::build(&cfg, true, &data, now);
+        let brief = response.reports.status.brief_text.as_ref().unwrap();
+        assert!(brief.starts_with(&response.reports.alarms.text));
+        assert!(brief.contains("20 alarms"));
+        assert!(brief.contains("Plus 15 more active alerts"));
+        assert!(brief.contains("Alarm coverage is incomplete."));
+        assert!(
+            brief.len() > 600,
+            "Safety disclosures must not be truncated to a healthy-answer budget"
+        );
+        assert!(brief.len() <= 1200);
+    }
+
+    #[test]
+    fn flow_config_rejects_overlap_noncanonical_sources_and_multiple_systems() {
+        for (load, grid, battery) in [
+            (
+                "system/0/Ac/Consumption/L1/Power,system/0/Ac/ConsumptionOnInput/L1/Power",
+                "",
+                "",
+            ),
+            (
+                "system/0/Ac/Consumption/L2/Power,system/0/Ac/ConsumptionOnOutput/L2/Power",
+                "",
+                "",
+            ),
+            (
+                "system/0/Ac/ConsumptionOnOutput/L1/Power,system/0/Ac/ConsumptionOnOutput/L1/Power",
+                "",
+                "",
+            ),
+            ("system/0/Ac/Consumption/Total/Power", "", ""),
+            ("system/00/Ac/Consumption/L1/Power", "", ""),
+            (
+                "system/0/Ac/Consumption/L1/Power",
+                "system/1/Ac/Grid/L1/Power",
+                "",
+            ),
+            ("", "system/0/Ac/Grid/L1/Power", "system/1/Dc/Battery/Power"),
+            ("", "system/0/Ac/ActiveIn/L1/Power", ""),
+            ("", "system/0/Ac/Genset/L1/Power", ""),
+            ("", "system/0/Ac/Grid/Total/Power", ""),
+            ("", "grid/0/Ac/L1/Power", ""),
+            ("", "", "battery/0/Dc/0/Power"),
+            (
+                "",
+                "",
+                "system/0/Dc/Battery/Power,system/1/Dc/Battery/Power",
+            ),
+        ] {
+            assert!(
+                EnergyConfig::default()
+                    .with_flow_sources(load, grid, battery)
+                    .is_err(),
+                "{load};{grid};{battery}"
+            );
+        }
+        assert!(EnergyConfig::default().with_flow_sources(
+            "system/0/Ac/ConsumptionOnInput/L1/Power,system/0/Ac/ConsumptionOnOutput/L1/Power,system/0/Ac/Consumption/L2/Power", "", ""
+        ).is_ok());
+    }
+
+    #[test]
+    fn flow_preserves_signed_net_power_provenance_and_default_status() {
+        let now = Instant::now();
+        let baseline = EnergyConfig::default();
+        let cfg = baseline
+            .clone()
+            .with_flow_sources(
+                "system/0/Ac/ConsumptionOnOutput/L1/Power,system/0/Ac/ConsumptionOnInput/L1/Power",
+                "system/0/Ac/Grid/L1/Power,system/0/Ac/Grid/L2/Power",
+                "system/0/Dc/Battery/Power",
+            )
+            .unwrap();
+        let data = readings(
+            now,
+            &[
+                ("system/0/Ac/ConsumptionOnOutput/L1/Power", json!(1000), 2),
+                ("system/0/Ac/ConsumptionOnInput/L1/Power", json!(250), 3),
+                ("system/0/Ac/Grid/L1/Power", json!(500), 1),
+                ("system/0/Ac/Grid/L2/Power", json!(-1000), 4),
+                ("system/0/Dc/Battery/Power", json!(750), 1),
+            ],
+        );
+        let response = EnergyResponse::build(&cfg, true, &data, now);
+        assert_eq!(
+            response.metrics.load_power.as_ref().unwrap().value,
+            Some(1250.0)
+        );
+        let grid = response.metrics.grid_power.as_ref().unwrap();
+        assert_eq!(grid.value, Some(-500.0));
+        assert_eq!(grid.age_seconds, Some(4));
+        assert_eq!(grid.sources, cfg.grid_power_sources);
+        let flow = response.reports.flow.as_ref().unwrap();
+        assert_eq!(flow.status, Status::Fresh);
+        assert_eq!(flow.text, "Configured AC consumption is 1.25 kilowatts. Net grid export is 500 watts. System battery is charging at 750 watts.");
+        assert_eq!(
+            serde_json::to_value(&response.reports.status).unwrap(),
+            serde_json::to_value(
+                EnergyResponse::build(&baseline, true, &data, now)
+                    .reports
+                    .status
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn flow_never_converts_missing_invalid_or_stale_phases_to_zero() {
+        let now = Instant::now();
+        let cfg = EnergyConfig::default()
+            .with_flow_sources(
+                "",
+                "system/0/Ac/Grid/L1/Power,system/0/Ac/Grid/L2/Power",
+                "",
+            )
+            .unwrap();
+        for (value, age, expected) in [
+            (None, 0, Status::Unavailable),
+            (Some(json!(null)), 0, Status::Unavailable),
+            (Some(json!("-10")), 0, Status::Unavailable),
+            (Some(json!(true)), 0, Status::Unavailable),
+            (Some(json!(-10)), 121, Status::Stale),
+        ] {
+            let mut data = readings(now, &[("system/0/Ac/Grid/L1/Power", json!(20), 0)]);
+            if let Some(value) = value {
+                data.extend(readings(now, &[("system/0/Ac/Grid/L2/Power", value, age)]));
+            }
+            let response = EnergyResponse::build(&cfg, true, &data, now);
+            let grid = response.metrics.grid_power.unwrap();
+            assert_eq!(grid.status, expected);
+            assert_eq!(grid.value, None);
+            assert_eq!(
+                response.metrics.load_power.unwrap().status,
+                Status::Unconfigured
+            );
+            assert_eq!(response.reports.flow.as_ref().unwrap().status, expected);
+            assert!(!response.reports.flow.unwrap().text.contains("20 watts"));
+        }
+    }
+
+    #[test]
+    fn flow_directions_zero_and_overflow_are_explicit() {
+        let now = Instant::now();
+        let cfg = EnergyConfig::default()
+            .with_flow_sources(
+                "system/0/Ac/Consumption/L1/Power",
+                "system/0/Ac/Grid/L1/Power,system/0/Ac/Grid/L2/Power",
+                "system/0/Dc/Battery/Power",
+            )
+            .unwrap();
+        let mut data = readings(
+            now,
+            &[
+                ("system/0/Ac/Consumption/L1/Power", json!(-1), 0),
+                ("system/0/Ac/Grid/L1/Power", json!(f64::MAX), 0),
+                ("system/0/Ac/Grid/L2/Power", json!(f64::MAX), 0),
+                ("system/0/Dc/Battery/Power", json!(-500), 0),
+            ],
+        );
+        let response = EnergyResponse::build(&cfg, true, &data, now);
+        assert_eq!(
+            response.metrics.load_power.unwrap().status,
+            Status::Unavailable
+        );
+        assert_eq!(response.metrics.grid_power.unwrap().value, None);
+        assert!(response
+            .reports
+            .flow
+            .unwrap()
+            .text
+            .contains("System battery is discharging at 500 watts."));
+        for (grid_value, battery_value, expected_grid, expected_battery) in [
+            (
+                500.0,
+                0.0,
+                "Net grid import is 500 watts.",
+                "System battery power is 0 watts.",
+            ),
+            (
+                -0.0,
+                -0.1,
+                "Net grid power is 0 watts.",
+                "System battery is discharging at less than 1 watt.",
+            ),
+        ] {
+            data.get_mut("system/0/Ac/Grid/L1/Power").unwrap().value = json!(grid_value);
+            data.get_mut("system/0/Ac/Grid/L2/Power").unwrap().value = json!(0);
+            data.get_mut("system/0/Dc/Battery/Power").unwrap().value = json!(battery_value);
+            let response = EnergyResponse::build(&cfg, true, &data, now);
+            let flow = response.reports.flow.unwrap();
+            assert!(flow.text.contains(expected_grid));
+            assert!(flow.text.contains(expected_battery));
+        }
+        let offline = EnergyResponse::build(&cfg, false, &data, now);
+        let grid = offline.metrics.grid_power.unwrap();
+        assert_eq!(grid.value, None);
+        assert_eq!(grid.age_seconds, None);
+        assert!(offline
+            .reports
+            .flow
+            .unwrap()
+            .text
+            .contains("disconnected from Cerbo GX"));
     }
 }
