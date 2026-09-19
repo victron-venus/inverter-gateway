@@ -1060,6 +1060,59 @@ mod tests {
     }
 
     #[test]
+    fn flow_energy_leaves_follow_removal_and_connection_lifecycle() {
+        use crate::energy::{EnergyConfig, Status};
+
+        let shared = Shared::new();
+        let cfg = EnergyConfig::default()
+            .with_flow_sources(
+                "system/0/Ac/ConsumptionOnOutput/L1/Power",
+                "system/0/Ac/Grid/L1/Power",
+                "system/0/Dc/Battery/Power",
+            )
+            .unwrap();
+        let update = |path: &str, value| ParsedUpdate {
+            service: "system".into(),
+            path: path.into(),
+            value,
+        };
+        shared.set_connected(true);
+        for (path, value) in [
+            ("0/Ac/ConsumptionOnOutput/L1/Power", 1000),
+            ("0/Ac/Grid/L1/Power", -500),
+            ("0/Dc/Battery/Power", 750),
+        ] {
+            shared.update(update(path, json!(value)));
+        }
+        assert_eq!(
+            shared.energy(&cfg).reports.flow.unwrap().status,
+            Status::Fresh
+        );
+        shared.update(update("0/Ac/Grid/L1/Power", Value::Null));
+        let removed = shared.energy(&cfg).metrics.grid_power.unwrap();
+        assert_eq!(removed.status, Status::Unavailable);
+        assert_eq!(removed.value, None);
+        assert_eq!(removed.age_seconds, None);
+        shared.update(update("0", Value::Null));
+        assert_eq!(
+            shared.energy(&cfg).metrics.battery_power.unwrap().value,
+            None
+        );
+        shared.update(update("0/Dc/Battery/Power", json!(-200)));
+        shared.set_connected(false);
+        shared.set_connected(true);
+        assert_eq!(
+            shared.energy(&cfg).metrics.battery_power.unwrap().value,
+            None
+        );
+        shared.update(update("0/Dc/Battery/Power", json!(-300)));
+        assert_eq!(
+            shared.energy(&cfg).metrics.battery_power.unwrap().value,
+            Some(-300.0)
+        );
+    }
+
+    #[test]
     fn unrelated_telemetry_cannot_refresh_an_energy_source() {
         use crate::energy::{EnergyConfig, Status};
 

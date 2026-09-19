@@ -97,7 +97,12 @@ impl Config {
             &env::var("GATEWAY_ENERGY_SOLAR_TODAY_SOURCES").unwrap_or_default(),
             &env::var("GATEWAY_ENERGY_MAX_AGE_SECS").unwrap_or_else(|_| "120".into()),
         )?
-        .with_alarm_sources(&env::var("GATEWAY_ENERGY_ALARM_SOURCES").unwrap_or_default())?;
+        .with_alarm_sources(&env::var("GATEWAY_ENERGY_ALARM_SOURCES").unwrap_or_default())?
+        .with_flow_sources(
+            &env::var("GATEWAY_ENERGY_LOAD_POWER_SOURCES").unwrap_or_default(),
+            &env::var("GATEWAY_ENERGY_GRID_POWER_SOURCES").unwrap_or_default(),
+            &env::var("GATEWAY_ENERGY_BATTERY_POWER_SOURCE").unwrap_or_default(),
+        )?;
         let allow_insecure = env::var("GATEWAY_ALLOW_INSECURE")
             .map(|v| v == "1")
             .unwrap_or(false);

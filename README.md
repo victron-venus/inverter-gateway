@@ -28,6 +28,26 @@ converted to zero. Unconfigured or incomplete alarm monitoring never reports an
 all-clear result. Give voice adapters `GATEWAY_READ_TOKEN`, which cannot access
 command routes.
 
+The energy contract also provides an additive brief overview and optional
+configured AC-load, grid-flow and battery-power reports. The detailed five-report
+contract remains available. Flow fields are absent until explicitly configured;
+no source discovery, forecasting or additional Cerbo polling is introduced.
+Read [architecture.md](architecture.md) for responsibilities, authorization,
+freshness decisions, consumer compatibility and deployment order.
+
+```mermaid
+flowchart LR
+  Telemetry["Current-session MQTT telemetry"] --> Normalize["IGW source selection and freshness"]
+  Normalize --> Detailed["Detailed reports and brief overview"]
+  Config["Optional explicit flow sources"] --> Flow["AC consumption, grid and battery power"]
+  Normalize --> Flow
+  Detailed --> API["Read-only /v1/energy"]
+  Flow --> API
+  API --> Alexa["Alexa speech and APL"]
+  API --> Cast["NAS speech and Cast video"]
+  Google["Google via Matter and HA trigger"] --> Cast
+```
+
 <!-- ci-release-process:start -->
 ## Release process
 
@@ -57,8 +77,8 @@ flowchart LR
       Bridge["MQTT bridge<br/>N/&lt;portal&gt;/#"]
       WL["Command whitelist<br/>W/&lt;portal&gt;/…"]
     end
-    MQTT["Cerbo GX MQTT<br/>:1883"]
   end
+  MQTT["Separate Cerbo GX<br/>MQTT broker"]
 
   Desk --> Access
   Curl --> Access

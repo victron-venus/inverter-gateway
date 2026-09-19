@@ -6,6 +6,9 @@ and computes this response from its existing memory cache. A voice request does
 not poll Cerbo, run a model on Cerbo, or require Home Assistant.
 
 Alexa and Google adapters should forward the selected `reports.<name>.text`.
+For a default overview they may prefer the optional
+`reports.status.brief_text`, falling back to `reports.status.text` on an older
+gateway. Detailed questions should continue to use `text`.
 They must not compute their own totals or replace unavailable readings with zero.
 Home Assistant can consume this endpoint as an optional Google Home adapter.
 
@@ -63,6 +66,53 @@ include the portal prefix, leading slash, wildcard, or duplicate source.
   The default is empty (`unconfigured`). See alarm monitoring below.
 - `GATEWAY_ENERGY_MAX_AGE_SECS` is a positive integer, default `120`. Each selected
   topic must have arrived within this age at the gateway.
+
+Optional energy flow configuration is disabled by default:
+
+- `GATEWAY_ENERGY_LOAD_POWER_SOURCES` accepts selected
+  `system/<instance>/Ac/ConsumptionOnInput/<phase>/Power` and
+  `system/<instance>/Ac/ConsumptionOnOutput/<phase>/Power` leaves. Select the
+  actual published input/output components and phases required for your AC
+  consumption report. The older `Ac/Consumption/<phase>/Power` aggregate is
+  accepted for installations publishing it, but may not be combined with an
+  input/output component for the same phase.
+- `GATEWAY_ENERGY_GRID_POWER_SOURCES` accepts
+  `system/<instance>/Ac/Grid/<phase>/Power` leaves. Their signed sum is **net**
+  grid power across exactly the configured phases: positive means import and
+  negative means export. Simultaneous import on one phase and export on another
+  can cancel. This is not gross import/export, an energy counter, or proof that
+  the grid is connected. `ActiveIn`, generator, inverter input and direct meter
+  paths are not accepted as substitutes.
+- `GATEWAY_ENERGY_BATTERY_POWER_SOURCE` accepts one
+  `system/<instance>/Dc/Battery/Power` leaf. Positive means power charging the
+  system-selected battery; negative means discharging. This describes signed
+  power, not the Venus battery state/deadband, charger stage, remaining runtime
+  or battery health. A separately configured battery SoC source may describe a
+  different battery; verify that selection before presenting them together.
+
+All flow phases must be `L1`, `L2` or `L3` and use one system instance across all
+three metrics. Duplicate sources, `Total` aliases, mixed instances, overlapping
+consumption aggregates and multiple battery power sources are rejected at
+startup. AC consumption rejects negative readings; grid and battery power
+accept finite signed readings. Source completeness and freshness use the same
+rules as the existing energy metrics: no guessed zero, partial sum or automatic
+fallback. Missing required phases invalidate the configured metric.
+
+AC consumption covers only the selected AC components. It does not include DC
+loads and is not automatically whole-home consumption. Source allowlists can
+prevent obvious overlaps but cannot prove meter placement, topology coverage
+or sign correctness in an installation. Compare the configured readings with
+the GX display before enabling a flow report. No conservation equation is used
+to infer a missing number from solar, grid, battery or load readings.
+
+These paths follow the [Victron D-Bus system contract](https://github.com/victronenergy/venus/wiki/dbus#system),
+which marks `Ac/Consumption` as the older aggregate of input and output loads.
+Battery direction follows [Victron system calculation](https://github.com/victronenergy/dbus-systemcalc-py/blob/master/dbus_systemcalc.py)
+and the [battery D-Bus sign convention](https://github.com/victronenergy/venus/wiki/dbus#battery).
+The grid sign agrees with the GX convention in the
+[Victron ESS integration documentation](https://www.victronenergy.com/live/ess:ess_mode_2_and_3).
+These are read-only measurements; enabling voice reports never writes ESS
+settings or starts a new Cerbo polling loop.
 
 Select the paths actually published by the installation. Configure only physical
 components that belong in the advertised total, and include every required
@@ -147,6 +197,7 @@ paths for equipment that does not exist; an absent path is not treated as zero.
     "alarms": {"text": "Alarm monitoring is not configured.", "status": "unconfigured"},
     "status": {
       "text": "Battery charge is 77.5 percent. Solar power is 1.55 kilowatts. Solar generation today is not configured. Alarm monitoring is not configured.",
+      "brief_text": "Battery 77.5 percent. Solar 1.55 kilowatts. Solar generation today is not configured. Alarm monitoring is not configured.",
       "status": "unconfigured"
     }
   }
@@ -170,7 +221,7 @@ Every metric has all five fields, including explicit JSON `null`:
   the age limit. `value` is null, so clients cannot accidentally speak an old
   number as current.
 - `unavailable`: MQTT is disconnected, a required source is absent/removed/null,
-  a value is nonnumeric/negative, battery SoC is outside 0–100, or aggregation
+  a value is nonnumeric/invalid for its sign rules, battery SoC is outside 0–100, or aggregation
   overflows. `value` is null. Missing/invalid data takes precedence over stale.
 - `unconfigured`: no sources were selected; `sources` is empty and `value` is null.
 
@@ -196,6 +247,58 @@ Each individual report uses its metric's or alarm-monitoring status.
 and uses this precedence: unavailable, stale, unconfigured, fresh. During an MQTT outage it instead returns one explicit
 connection-unavailable report. The status report is an energy summary, not a
 claim that the installation is free of alarms or electrically safe.
+
+### Brief speech and optional flow
+
+`reports.status.brief_text` is additive in schema version 1. It shortens fresh
+metric labels while preserving the complete existing alarm report, including
+the bounded list/count of active alerts and every incomplete-coverage notice.
+Active alarm text comes first. Stale, unavailable and unconfigured metrics keep
+their complete detailed notice. An MQTT outage produces the same explicit
+connection failure as the detailed overview. There is no strict duration limit:
+warnings and missing-data explanations take priority over a short answer.
+The existing `reports.status.text` and status precedence remain unchanged.
+
+When any flow source is configured, all three optional metric keys
+`metrics.load_power`, `metrics.grid_power` and `metrics.battery_power` appear,
+each with the existing five metric fields and unit `W`. A component with an
+empty source list explicitly has status `unconfigured`, null value and age,
+and an empty source list. `reports.flow` contains their shared English report
+and combined status, using the same unavailable/stale/unconfigured precedence.
+Stale and unavailable signed metrics also have a null value: clients must not
+draw a current direction arrow from an old number.
+
+With all flow configuration empty these four new keys are omitted, preserving
+the default contract shape. New clients should interpret absent optional flow
+keys as unsupported/unconfigured rather than zero. Flow is a separate question;
+it does not enlarge the default overview or change `reports.status.status`.
+
+For an installation that publishes only the required AC-output consumption
+component on one phase, a configuration might be:
+
+```dotenv
+GATEWAY_ENERGY_LOAD_POWER_SOURCES=system/0/Ac/ConsumptionOnOutput/L1/Power
+GATEWAY_ENERGY_GRID_POWER_SOURCES=system/0/Ac/Grid/L1/Power
+GATEWAY_ENERGY_BATTERY_POWER_SOURCE=system/0/Dc/Battery/Power
+```
+
+This is a topology example, not a default or a claim of complete household
+coverage. Include other required published phases/components explicitly. With
+synthetic fresh readings of 1,250 W, -500 W and 750 W respectively,
+`reports.flow.text` is:
+
+> Configured AC consumption is 1.25 kilowatts. Net grid export is 500 watts.
+> System battery is charging at 750 watts.
+
+Zero is reported as zero power without claiming that a grid is disconnected or
+a battery is full. Small nonzero signed magnitudes below one watt retain their
+direction and are spoken as "less than 1 watt". All numeric metric values retain
+their original precision.
+
+The [synthetic flow fixture](../tests/fixtures/energy-flow-v1.json) is checked
+against the real response serializer by the Rust suite and can be used for
+adapter compatibility tests. Its readings and fixed timestamp are examples,
+not an installation snapshot.
 
 ## Alarm monitoring
 

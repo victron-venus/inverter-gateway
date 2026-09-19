@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "generated_at": 1700000000,
+  "mqtt_connected": true,
+  "metrics": {
+    "battery_soc": {
+      "value": 70.0,
+      "unit": "%",
+      "status": "fresh",
+      "sources": [
+        "system/0/Dc/Battery/Soc"
+      ],
+      "age_seconds": 2
+    },
+    "solar_power": {
+      "value": 2500.0,
+      "unit": "W",
+      "status": "fresh",
+      "sources": [
+        "system/0/Dc/Pv/Power"
+      ],
+      "age_seconds": 3
+    },
+    "solar_today": {
+      "value": 4.5,
+      "unit": "kWh",
+      "status": "fresh",
+      "sources": [
+        "solarcharger/1/History/Daily/0/Yield"
+      ],
+      "age_seconds": 4
+    },
+    "load_power": {
+      "value": 1250.0,
+      "unit": "W",
+      "status": "fresh",
+      "sources": [
+        "system/0/Ac/ConsumptionOnOutput/L1/Power"
+      ],
+      "age_seconds": 2
+    },
+    "grid_power": {
+      "value": -500.0,
+      "unit": "W",
+      "status": "fresh",
+      "sources": [
+        "system/0/Ac/Grid/L1/Power"
+      ],
+      "age_seconds": 2
+    },
+    "battery_power": {
+      "value": 750.0,
+      "unit": "W",
+      "status": "fresh",
+      "sources": [
+        "system/0/Dc/Battery/Power"
+      ],
+      "age_seconds": 2
+    }
+  },
+  "alarms": {
+    "status": "fresh",
+    "active": [],
+    "sources": [
+      "battery/1/Alarms/LowVoltage"
+    ],
+    "age_seconds": 1
+  },
+  "reports": {
+    "battery": {
+      "text": "Battery charge is 70 percent.",
+      "status": "fresh"
+    },
+    "solar": {
+      "text": "Solar power is 2.5 kilowatts.",
+      "status": "fresh"
+    },
+    "solar_today": {
+      "text": "Solar charger generation today is 4.5 kilowatt hours.",
+      "status": "fresh"
+    },
+    "alarms": {
+      "text": "No active alarms in the monitored sources.",
+      "status": "fresh"
+    },
+    "status": {
+      "text": "Battery charge is 70 percent. Solar power is 2.5 kilowatts. Solar charger generation today is 4.5 kilowatt hours. No active alarms in the monitored sources.",
+      "status": "fresh",
+      "brief_text": "Battery 70 percent. Solar 2.5 kilowatts. Solar chargers today 4.5 kilowatt hours. No active alarms in the monitored sources."
+    },
+    "flow": {
+      "text": "Configured AC consumption is 1.25 kilowatts. Net grid export is 500 watts. System battery is charging at 750 watts.",
+      "status": "fresh"
+    }
+  }
+}
