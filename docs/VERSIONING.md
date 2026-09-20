@@ -48,9 +48,28 @@ by this implementation.
 
 SemVer prereleases map to Python PEP 440 where declared. Apple marketing versions
 remain numeric; the product UI can independently use the full embedded identity.
+Python nightlies use `X.Y.Z.dev<run_id * 1000000 + attempt>`: attempts must be
+below one million and the numeric component must fit `uv`'s unsigned 64-bit
+limit (at most `2**64 - 2`). This preserves run/attempt ordering and uniqueness
+without a local suffix. The full tag and frozen plan retain the UTC timestamp.
+The former concatenated timestamp/run/attempt projection exceeded that limit;
+do not reuse previously produced package receipts after changing the recipe.
 Native counters must be seeded above existing compatible published values.
 The Apple build projection uses bounded numeric components; changing an older,
 incompatible build-number format needs a reviewed platform migration.
+
+Tauri applications that build Windows MSI packages must project the numeric
+`base` version into `tauri.conf.json`. Keep the `full` candidate in owned package
+manifests and expose the frozen plan identity to the UI/runtime, so beta and RC
+labels remain visible without putting an unsupported prerelease string in MSI
+metadata. Tauri can serialize Cargo manifests with LF while preparing a build;
+because receipts intentionally compare exact input bytes after packaging, keep
+those checkout bytes stable on Windows:
+
+```gitattributes
+src-tauri/Cargo.toml text eol=lf
+src-tauri/Cargo.lock text eol=lf
+```
 
 ## Durable allocation and retries
 

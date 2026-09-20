@@ -84,7 +84,6 @@ jobs:
     permissions:
       contents: read
       actions: read
-    secrets: inherit
     with:
       version: ${{ needs.prepare.outputs.version }}
       channel: ${{ needs.prepare.outputs.channel }}
