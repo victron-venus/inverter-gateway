@@ -426,14 +426,16 @@ def projections(plan, ecosystem="semver"):
         elif channel == "rc":
             package = f"{base}rc{sequence}"
         elif channel == "nightly":
-            # Fixed-width UTC time plus bounded run/attempt columns is ordered,
-            # unlike joining variable-width integer components without padding.
-            timestamp, run, attempt = sequence.split(".")
+            # uv stores each PEP 440 numeric component in a bounded u64.
+            # GitHub run IDs provide ordering/uniqueness; reserve six digits
+            # for attempts. Keep UTC time in the full identity and frozen plan.
+            _, run, attempt = sequence.split(".")
+            number = int(run) * 1_000_000 + int(attempt)
             require(
-                len(run) <= 20 and len(attempt) <= 10,
+                int(attempt) < 1_000_000 and number <= 2**64 - 2,
                 "Nightly run or attempt is too large for PEP 440 projection",
             )
-            package = f"{base}.dev{timestamp}{int(run):020d}{int(attempt):010d}"
+            package = f"{base}.dev{number}"
     build = plan["build_number"]
     apple = None
     if build is not None and 0 < build <= 99_990_000:

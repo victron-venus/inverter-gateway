@@ -102,6 +102,28 @@ class PlanTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             version.create_plan("1.2.3", "beta", 1, SHA.upper(), policy())
 
+    def test_real_nightly_run_fits_uv_numeric_limit(self):
+        plan = version.create_plan(
+            "1.3.3", "nightly", "20260919073112.35429540547.1", SHA, policy()
+        )
+        projected = version.projections(plan, "pep440")["package"]
+        self.assertEqual(projected, "1.3.3.dev35429540547000001")
+        self.assertLessEqual(int(projected.split("dev")[1]), 2**64 - 2)
+
+    def test_nightly_runs_and_attempts_cannot_collide_or_overflow(self):
+        def project(run, attempt):
+            plan = version.create_plan(
+                "1.2.3", "nightly", f"20260919073112.{run}.{attempt}", SHA, policy()
+            )
+            return int(version.projections(plan, "pep440")["package"].split("dev")[1])
+
+        self.assertLess(project(12, 999999), project(13, 1))
+        run, attempt = divmod(2**64 - 2, 1_000_000)
+        self.assertEqual(project(run, attempt), 2**64 - 2)
+        for args in ((12, 1000000), (run, attempt + 1), (run + 1, 1)):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                project(*args)
+
     def test_plan_policy_source_and_canonical_digest_binding(self):
         config = policy()
         plan = version.create_plan("1.2.3", "beta", 1, SHA, config)
