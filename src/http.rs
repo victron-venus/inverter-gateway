@@ -458,6 +458,91 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn tariff_writes_require_auth_fresh_capability_and_a_bounded_envelope() {
+        use axum::{body::Body, http::Request};
+        use serde_json::json;
+        use tower::ServiceExt;
+        let mut cfg = cfg_with_token("write-secret");
+        cfg.inverter_topic_prefix = "site/control".into();
+        let state = make_state(cfg);
+        state.shared.set_connected(true);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        *state.shared.command_tx.lock() = Some(tx);
+        let app = router(state.clone());
+        let body = json!({"request_id":"tariff-1", "revision":"a".repeat(64), "plan":null});
+        let request = |token: &str, body: serde_json::Value| {
+            Request::builder()
+                .method("POST")
+                .uri("/v1/commands/electricity_tariff")
+                .header("Content-Type", "application/json")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+        assert_eq!(
+            app.clone()
+                .oneshot(request("read-secret", body.clone()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request("write-secret", body.clone()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        state
+            .shared
+            .update_inverter(json!({"ui_config":{"electricity_tariff_status":{"writable":true}}}));
+        for invalid in [
+            json!({}),
+            json!({"request_id":"", "revision":"a".repeat(64), "plan":null}),
+            json!({"request_id":"x".repeat(129), "revision":"a".repeat(64), "plan":null}),
+            json!({"request_id":"bad/id", "revision":"a".repeat(64), "plan":null}),
+            json!({"request_id":"тариф", "revision":"a".repeat(64), "plan":null}),
+            json!({"request_id":"id", "revision":"bad", "plan":null}),
+            json!({"request_id":"id", "revision":"A".repeat(64), "plan":null}),
+            json!({"request_id":"id", "revision":"g".repeat(64), "plan":null}),
+            json!({"request_id":"id", "revision":"a".repeat(64), "plan":[]}),
+            json!({"request_id":"id", "revision":"a".repeat(64), "plan":true}),
+            json!({"request_id":"id", "revision":"a".repeat(64), "plan":null,"path":"/etc/file"}),
+            json!({"request_id":"id", "revision":"a".repeat(64), "plan":{"name":"x".repeat(100_001)}}),
+        ] {
+            assert_eq!(
+                app.clone()
+                    .oneshot(request("write-secret", invalid))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::BAD_REQUEST
+            );
+            assert!(rx.try_recv().is_err());
+        }
+        assert_eq!(
+            app.clone()
+                .oneshot(request("write-secret", body.clone()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        let command = rx.try_recv().unwrap();
+        assert_eq!(command.topic, "site/control/cmd/electricity_tariff");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&command.payload).unwrap(),
+            body
+        );
+        state.shared.set_connected(false);
+        assert!(!state
+            .shared
+            .send_if_current(&command, || panic!("stale edit must not publish")));
+    }
+
+    #[tokio::test]
     async fn setpoint_override_requires_write_auth_and_exact_correlated_payload() {
         use axum::{body::Body, http::Request};
         use serde_json::json;
@@ -752,7 +837,7 @@ pub(crate) mod tests {
         let data = frame.strip_prefix("data: ").unwrap().trim();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(data).unwrap(),
-            serde_json::json!({"capabilities":{"water_mode":true,"setpoint_override":true}, "inverter": null, "battery": {"0/Dc/0/Voltage": 49}})
+            serde_json::json!({"capabilities":{"water_mode":true,"setpoint_override":true,"electricity_tariff":true}, "inverter": null, "battery": {"0/Dc/0/Voltage": 49}})
         );
         state.shared.set_connected(false);
         assert!(

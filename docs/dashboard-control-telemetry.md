@@ -63,9 +63,58 @@ state when the bridge hands it to the broker client. A disconnect drops pending
 controller publications before reconnecting; legacy native alarm commands retain
 their existing behavior. HTTP acceptance acknowledges queueing, not execution by
 the physical controller. The five-second limit ends at broker-client handoff;
-MQTT does not provide an execution deadline. The override command below has a
-separate correlated daemon acknowledgement; other command success remains
+MQTT does not provide an execution deadline. Tariff edits and the override command
+below have correlated daemon acknowledgements; other command success remains
 queue acceptance followed by state readback.
+
+## Controller-owned electricity tariff
+
+`inverter-control` owns the tariff plan, validation and durable configuration.
+IGW transports `inverter.ui_config.electricity_tariff` and
+`inverter.ui_config.electricity_tariff_status` unchanged in snapshots and SSE;
+it does not maintain a separate tariff or calculate prices.
+
+`capabilities.electricity_tariff: true` advertises this gateway's command route.
+Clients must also require a fresh controller snapshot with
+`ui_config.electricity_tariff_status.writable: true` before enabling edits.
+Older controllers remain readable but cannot be edited through this route.
+
+`POST /v1/commands/electricity_tariff` requires the write credential and exactly
+three fields:
+
+```json
+{"request_id":"tariff-1","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","plan":null}
+```
+
+The revision must be the current controller-provided SHA-256, encoded as 64
+lowercase hexadecimal characters; the example is a placeholder.
+`request_id` uses the same nonempty 128-character ASCII identifier format as
+setpoint overrides. `plan` is an object, or `null` to clear the configured plan.
+The compact UTF-8 JSON envelope must be at most 100,000 bytes. Extra fields,
+arbitrary topics, invalid identifiers and other plan types are rejected by IGW.
+The controller validates the complete plan schema and checks the revision before
+persisting; the gateway deliberately does not duplicate those rules.
+
+The fixed publication is `<INVERTER_TOPIC_PREFIX>/cmd/electricity_tariff`, QoS 0
+with no retain flag. It uses the five-second queue deadline and connection
+generation guard, and rechecks controller freshness and writability at handoff.
+Pending tariff publications are dropped on disconnect rather than replayed on a
+new connection. MQTT packet limits allow the bounded command and larger controller
+state envelopes (128 KiB outgoing and 1 MiB incoming).
+
+HTTP 200 means queued only. The gateway never fabricates a save acknowledgement.
+Clients send once and wait for the controller's subsequent
+`ui_config.electricity_tariff_status` with the matching `request_id`:
+
+```json
+{"writable":true,"revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","request_id":"tariff-1","error":null}
+```
+
+`error: null` confirms the requested plan is durably stored (or already identical).
+A non-null error reports rejection and leaves the prior plan authoritative.
+After a timeout or interrupted response, refresh status before another user
+decision; never automatically retry or switch transports. Controller expiry or
+MQTT disconnect invalidates this status with the rest of the controller envelope.
 
 ## Correlated setpoint override
 
