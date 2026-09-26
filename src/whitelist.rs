@@ -29,7 +29,12 @@ pub fn is_known(name: &str) -> bool {
     WL.contains_key(name)
         || matches!(
             name,
-            "toggle" | "dry_run" | "ess_mode" | "water_mode" | "setpoint_override"
+            "toggle"
+                | "dry_run"
+                | "ess_mode"
+                | "water_mode"
+                | "setpoint_override"
+                | "electricity_tariff"
         )
 }
 
@@ -77,6 +82,35 @@ fn controller_payload(name: &str, body: Value) -> Result<Value, CommandError> {
             Ok(body)
         }
         "ess_mode" if object.is_empty() => Ok(body),
+        "electricity_tariff" if object.len() == 3 => {
+            let valid = object
+                .get("request_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| {
+                    !id.is_empty()
+                        && id.len() <= 128
+                        && id.bytes().all(|b| {
+                            b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-')
+                        })
+                })
+                && object
+                    .get("revision")
+                    .and_then(Value::as_str)
+                    .is_some_and(|revision| {
+                        revision.len() == 64
+                            && revision
+                                .bytes()
+                                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                    })
+                && object
+                    .get("plan")
+                    .is_some_and(|plan| plan.is_null() || plan.is_object())
+                && body.to_string().len() <= 100_000;
+            if !valid {
+                return Err(invalid());
+            }
+            Ok(body)
+        }
         "setpoint_override" if object.len() == 2 => {
             let valid_value = object.get("value").is_some_and(|value| {
                 value.is_null()
@@ -140,11 +174,13 @@ pub async fn execute(state: &AppState, name: &str, body: Value) -> Result<(), Co
         water_request(state, body)?
     } else if matches!(
         name,
-        "toggle" | "dry_run" | "ess_mode" | "setpoint_override"
+        "toggle" | "dry_run" | "ess_mode" | "setpoint_override" | "electricity_tariff"
     ) {
         let payload = controller_payload(name, body)?;
         let topic = format!("{}/cmd/{name}", state.cfg.inverter_topic_prefix);
-        if name == "setpoint_override" {
+        if name == "electricity_tariff" {
+            state.shared.tariff_command(topic, payload.to_string())
+        } else if name == "setpoint_override" {
             state
                 .shared
                 .setpoint_override_command(topic, payload.to_string())

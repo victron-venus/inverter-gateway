@@ -47,6 +47,7 @@ pub struct Snapshot {
 pub struct Capabilities {
     pub water_mode: bool,
     pub setpoint_override: bool,
+    pub electricity_tariff: bool,
 }
 
 impl Default for Capabilities {
@@ -54,6 +55,7 @@ impl Default for Capabilities {
         Self {
             water_mode: true,
             setpoint_override: true,
+            electricity_tariff: true,
         }
     }
 }
@@ -95,6 +97,7 @@ pub struct CommandRequest {
 enum CommandTarget {
     Controller,
     SetpointOverride,
+    ElectricityTariff,
     Water(u32),
 }
 
@@ -143,6 +146,10 @@ impl Shared {
 
     pub fn controller_command(&self, topic: String, payload: String) -> Option<CommandRequest> {
         self.guarded_command(topic, payload, CommandTarget::Controller)
+    }
+
+    pub fn tariff_command(&self, topic: String, payload: String) -> Option<CommandRequest> {
+        self.guarded_command(topic, payload, CommandTarget::ElectricityTariff)
     }
 
     pub fn setpoint_override_command(
@@ -363,6 +370,18 @@ impl Telemetry {
     fn command_target_available(&self, target: CommandTarget) -> bool {
         match target {
             CommandTarget::Controller => self.current_snapshot().inverter.is_some(),
+            CommandTarget::ElectricityTariff => {
+                self.current_snapshot()
+                    .inverter
+                    .as_ref()
+                    .and_then(|inverter| {
+                        inverter
+                            .get("ui_config")
+                            .and_then(|ui| ui.pointer("/electricity_tariff_status/writable"))
+                    })
+                    .and_then(Value::as_bool)
+                    == Some(true)
+            }
             CommandTarget::SetpointOverride => self
                 .current_snapshot()
                 .inverter
@@ -789,6 +808,44 @@ mod tests {
         shared.set_connected(true);
         shared.update_inverter(json!({"booleans":{}}));
         shared.update_setpoint_override(ack);
+        assert!(!shared.send_if_current(&queued, || panic!("crossed connection")));
+        assert!(shared.send_if_current(&command().unwrap(), || {}));
+    }
+
+    #[test]
+    fn tariff_commands_require_writability_and_revalidate_age_and_connection() {
+        let shared = Shared::new();
+        let command =
+            || shared.tariff_command("site/control/cmd/electricity_tariff".into(), "{}".into());
+        let writable = json!({"ui_config":{"electricity_tariff_status":{"writable":true}}});
+        assert!(command().is_none());
+        shared.set_connected(true);
+        shared.update_inverter(writable.clone());
+        let queued = command().unwrap();
+        assert!(shared.send_if_current(&queued, || {}));
+        for unavailable in [
+            Value::Null,
+            json!({"ui_config":{}}),
+            json!({"ui_config":{"electricity_tariff_status":{"writable":false}}}),
+            json!({"ui_config":{"electricity_tariff_status":{"writable":"true"}}}),
+        ] {
+            shared.update_inverter(unavailable);
+            assert!(command().is_none());
+            assert!(!shared.send_if_current(&queued, || panic!("unavailable tariff writer")));
+        }
+        shared.update_inverter(writable.clone());
+        shared.telemetry.write().inverter_received_at =
+            Some(Instant::now() - Duration::from_secs(121));
+        assert!(command().is_none());
+        assert!(!shared.send_if_current(&queued, || panic!("expired controller")));
+        shared.update_inverter(writable.clone());
+        let mut expired = command().unwrap();
+        expired.guard.as_mut().unwrap().queued = Instant::now() - Duration::from_secs(6);
+        assert!(!shared.send_if_current(&expired, || panic!("expired queue")));
+        shared.set_connected(false);
+        assert!(command().is_none());
+        shared.set_connected(true);
+        shared.update_inverter(writable);
         assert!(!shared.send_if_current(&queued, || panic!("crossed connection")));
         assert!(shared.send_if_current(&command().unwrap(), || {}));
     }

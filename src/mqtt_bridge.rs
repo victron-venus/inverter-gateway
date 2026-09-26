@@ -55,7 +55,7 @@ impl MqttBridge {
         let mut opts = MqttOptions::new(&cfg.mqtt_client_id, &cfg.mqtt_host, cfg.mqtt_port);
         opts.set_credentials(&cfg.mqtt_username, &cfg.mqtt_password);
         opts.set_keep_alive(Duration::from_secs(30));
-        opts.set_max_packet_size(1024 * 1024, 64 * 1024);
+        opts.set_max_packet_size(1024 * 1024, 128 * 1024);
         opts.set_transport(mqtt_transport(cfg.mqtt_tls, cfg.mqtt_ca_file.as_deref())?);
         Ok(AsyncClient::new(opts, 256))
     }
@@ -221,11 +221,12 @@ impl MqttBridge {
                         let topic = &request.topic;
                         let payload = &request.payload;
                         debug!(topic = %topic, "publishing command");
-                        // Overrides and the legacy ESS toggle must not
+                        // Tariff edits, overrides and the legacy ESS toggle must not
                         // request redelivery after their originating state changes.
                         let qos = if request.is_water_command()
                             || topic == &format!("{inverter_prefix}/cmd/ess_mode")
-                            || topic == &format!("{inverter_prefix}/cmd/setpoint_override") {
+                            || topic == &format!("{inverter_prefix}/cmd/setpoint_override")
+                            || topic == &format!("{inverter_prefix}/cmd/electricity_tariff") {
                             QoS::AtMostOnce
                         } else {
                             QoS::AtLeastOnce
@@ -829,7 +830,13 @@ mod tests {
     async fn disconnect_discards_controller_requests_already_in_mqtt_queue() {
         let opts = MqttOptions::new("discard-test", "127.0.0.1", 1883);
         let (client, mut eventloop) = AsyncClient::new(opts, 8);
-        for action in ["toggle", "dry_run", "ess_mode", "setpoint_override"] {
+        for action in [
+            "toggle",
+            "dry_run",
+            "ess_mode",
+            "setpoint_override",
+            "electricity_tariff",
+        ] {
             client
                 .try_publish(
                     format!("house/control/cmd/{action}"),
@@ -991,6 +998,134 @@ mod tests {
         MqttBridge::handle_disconnect(&shared, &mut eventloop, "site/control");
         assert!(!eventloop.pending.iter().any(|request| matches!(request,
             rumqttc::Request::Publish(p) if p.topic == "site/control/cmd/setpoint_override")));
+    }
+
+    #[tokio::test]
+    async fn tariff_publishes_once_without_retention_ack_or_reconnect_replay() {
+        let mut cfg = test_cfg(1883, None);
+        cfg.mqtt_tls = false;
+        let (client, mut eventloop) = MqttBridge::new_client(&cfg).unwrap();
+        let shared = Shared::new();
+        shared.set_connected(true);
+        let previous =
+            json!({"writable":true,"revision":"a".repeat(64),"request_id":null,"error":null});
+        shared.update_inverter(json!({"ui_config":{"electricity_tariff_status":previous}}));
+        // Near-limit plans exceed rumqttc's default 10 KiB packet size.
+        let payload = json!({"request_id":"tariff-id","revision":"a".repeat(64),"plan":{"name":"x".repeat(99_000)}}).to_string();
+        let request = shared
+            .tariff_command(
+                "site/control/cmd/electricity_tariff".into(),
+                payload.clone(),
+            )
+            .unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(request).unwrap();
+        drop(tx);
+        let (_connected_tx, connected_rx) = tokio::sync::watch::channel(());
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            MqttBridge::send_requests(
+                &client,
+                &shared,
+                "N/test/",
+                "site/control",
+                rx,
+                connected_rx,
+            ),
+        )
+        .await
+        .unwrap();
+        eventloop.clean();
+        let commands: Vec<_> = eventloop
+            .pending
+            .iter()
+            .filter_map(|request| match request {
+                rumqttc::Request::Publish(p)
+                    if p.topic == "site/control/cmd/electricity_tariff" =>
+                {
+                    Some(p)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].qos, QoS::AtMostOnce);
+        assert!(!commands[0].retain);
+        assert_eq!(commands[0].payload.as_ref(), payload.as_bytes());
+        assert_eq!(
+            shared.snapshot().unwrap().inverter.unwrap()["ui_config"]["electricity_tariff_status"],
+            previous
+        );
+        MqttBridge::handle_disconnect(&shared, &mut eventloop, "site/control");
+        assert!(!eventloop.pending.iter().any(|request| matches!(request,
+            rumqttc::Request::Publish(p) if p.topic == "site/control/cmd/electricity_tariff")));
+    }
+
+    #[tokio::test]
+    async fn mqtt_carries_large_tariff_commands_and_controller_envelopes() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut cfg = test_cfg(listener.local_addr().unwrap().port(), None);
+        cfg.mqtt_tls = false;
+        let (client, mut eventloop) = MqttBridge::new_client(&cfg).unwrap();
+        let payload = json!({"request_id":"tariff-id","revision":"a".repeat(64),"plan":{"name":"x".repeat(99_000)}}).to_string();
+        client
+            .try_publish(
+                "inverter/cmd/electricity_tariff",
+                QoS::AtMostOnce,
+                false,
+                payload.as_bytes(),
+            )
+            .unwrap();
+        let controller =
+            json!({"ui_config":{"electricity_tariff":{"name":"x".repeat(99_000)}}}).to_string();
+        let server = async {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            assert_eq!(read_packet(&mut socket).await.unwrap().0, 0x10);
+            socket.write_all(&[0x20, 2, 0, 0]).await.unwrap();
+            let (header, command) = read_packet(&mut socket).await.unwrap();
+            assert_eq!(header, 0x30); // QoS 0, no retention.
+            let topic_len = u16::from_be_bytes([command[0], command[1]]) as usize;
+            assert_eq!(
+                &command[2..2 + topic_len],
+                b"inverter/cmd/electricity_tariff"
+            );
+            assert_eq!(&command[2 + topic_len..], payload.as_bytes());
+            let topic = b"inverter/state";
+            let mut remaining = 2 + topic.len() + controller.len();
+            let mut packet = vec![0x30];
+            loop {
+                let mut byte = (remaining % 128) as u8;
+                remaining /= 128;
+                if remaining > 0 {
+                    byte |= 128;
+                }
+                packet.push(byte);
+                if remaining == 0 {
+                    break;
+                }
+            }
+            packet.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+            packet.extend_from_slice(topic);
+            packet.extend_from_slice(controller.as_bytes());
+            socket.write_all(&packet).await.unwrap();
+            // Keep the fixture connection alive until the client reads the packet.
+            socket
+        };
+        let receiver = async {
+            loop {
+                if let Event::Incoming(Packet::Publish(publish)) = eventloop.poll().await.unwrap() {
+                    assert_eq!(publish.topic, "inverter/state");
+                    assert_eq!(publish.payload.as_ref(), controller.as_bytes());
+                    break;
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(server, receiver);
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
