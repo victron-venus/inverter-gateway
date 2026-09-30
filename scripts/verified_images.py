@@ -16,7 +16,13 @@ import tempfile
 from pathlib import Path
 
 from publish_verified import verified_assets, verified_publication_config
-from release_control import GitHub, ReleaseError, digest, require
+from release_control import (
+    GitHub,
+    ReleaseError,
+    atomic_write_bytes,
+    digest,
+    require,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -70,7 +76,7 @@ def main():
         policy = json.loads((ROOT / ".release-policy.json").read_text())
         with tempfile.TemporaryDirectory(prefix="verified-image-digests-") as temporary:
             result = resolve(policy, args.tag, Path(temporary))
-        args.output.write_text(json.dumps(result, indent=2) + "\n")
+        atomic_write_bytes(args.output, (json.dumps(result, indent=2) + "\n").encode())
         print(
             f"Verified {len(result['images'])} immutable image digests in {args.output}"
         )
