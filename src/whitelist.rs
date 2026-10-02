@@ -3,6 +3,38 @@ use std::collections::HashMap;
 
 use crate::state::AppState;
 
+pub(crate) const ESS_MODES: &[&str] = &[
+    "off",
+    "on",
+    "optimized_with_battery_life",
+    "optimized_without_battery_life",
+    "keep_batteries_charged",
+    "external_control",
+];
+
+pub(crate) fn validate_ess_selection(body: &Value) -> Result<(), String> {
+    let valid = body.as_object().is_some_and(|obj| obj.len() == 2)
+        && body
+            .get("mode")
+            .and_then(Value::as_str)
+            .is_some_and(|mode| ESS_MODES.contains(&mode))
+        && body
+            .get("request_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| {
+                !id.is_empty()
+                    && id.len() <= 128
+                    && id.bytes().all(|b| {
+                        b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-')
+                    })
+            });
+    if valid {
+        Ok(())
+    } else {
+        Err("Invalid ESS mode selection".into())
+    }
+}
+
 type CommandDef = (&'static str, &'static str);
 type Whitelist = HashMap<&'static str, CommandDef>;
 
@@ -32,6 +64,7 @@ pub fn is_known(name: &str) -> bool {
             "toggle"
                 | "dry_run"
                 | "ess_mode"
+                | "set_ess_mode"
                 | "water_mode"
                 | "setpoint_override"
                 | "electricity_tariff"
@@ -82,6 +115,10 @@ fn controller_payload(name: &str, body: Value) -> Result<Value, CommandError> {
             Ok(body)
         }
         "ess_mode" if object.is_empty() => Ok(body),
+        "set_ess_mode" => {
+            validate_ess_selection(&body).map_err(CommandError::InvalidBody)?;
+            Ok(body)
+        }
         "electricity_tariff" if object.len() == 3 => {
             let valid = object
                 .get("request_id")
@@ -174,11 +211,20 @@ pub async fn execute(state: &AppState, name: &str, body: Value) -> Result<(), Co
         water_request(state, body)?
     } else if matches!(
         name,
-        "toggle" | "dry_run" | "ess_mode" | "setpoint_override" | "electricity_tariff"
+        "toggle"
+            | "dry_run"
+            | "ess_mode"
+            | "set_ess_mode"
+            | "setpoint_override"
+            | "electricity_tariff"
     ) {
         let payload = controller_payload(name, body)?;
         let topic = format!("{}/cmd/{name}", state.cfg.inverter_topic_prefix);
-        if name == "electricity_tariff" {
+        if name == "set_ess_mode" {
+            state
+                .shared
+                .ess_selection_command(topic, payload.to_string())
+        } else if name == "electricity_tariff" {
             state.shared.tariff_command(topic, payload.to_string())
         } else if name == "setpoint_override" {
             state
@@ -308,6 +354,61 @@ mod tests {
             execute(&state, "ess_mode", json!({})).await,
             Err(CommandError::Unavailable)
         ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn ess_selection_requires_capable_controller_and_valid_envelope() {
+        let mut cfg = crate::http::tests::cfg_with_token("test-token");
+        cfg.inverter_topic_prefix = "house/control".into();
+        let state = AppState::new(cfg);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        *state.shared.command_tx.lock() = Some(tx);
+        state.shared.set_connected(true);
+        state
+            .shared
+            .update_inverter(json!({"ess_mode":{"is_external":true}}));
+        let body = json!({"mode":"off","request_id":"ess-1"});
+        assert!(matches!(
+            execute(&state, "set_ess_mode", body.clone()).await,
+            Err(CommandError::Unavailable)
+        ));
+        state
+            .shared
+            .update_inverter(json!({"ess_mode":{"selection_supported":true}}));
+        for mode in ESS_MODES {
+            let body = json!({"mode":mode,"request_id":"ess-1"});
+            execute(&state, "set_ess_mode", body.clone()).await.unwrap();
+            let request = rx.try_recv().unwrap();
+            assert_eq!(request.topic, "house/control/cmd/set_ess_mode");
+            assert_eq!(
+                serde_json::from_str::<Value>(&request.payload).unwrap(),
+                body
+            );
+            assert!(state.shared.send_if_current(&request, || {}));
+            state.shared.set_connected(false);
+            assert!(!state.shared.send_if_current(&request, || panic!("replay")));
+            state.shared.set_connected(true);
+            state
+                .shared
+                .update_inverter(json!({"ess_mode":{"selection_supported":true}}));
+            assert!(!state
+                .shared
+                .send_if_current(&request, || panic!("replay after reconnect")));
+        }
+        for body in [
+            json!({}),
+            json!({"mode":"off"}),
+            json!({"mode":"toggle","request_id":"x"}),
+            json!({"mode":"off","request_id":""}),
+            json!({"mode":false,"request_id":"x"}),
+            json!({"mode":"off","request_id":"x","topic":"arbitrary"}),
+        ] {
+            assert!(matches!(
+                execute(&state, "set_ess_mode", body).await,
+                Err(CommandError::InvalidBody(_))
+            ));
+        }
         assert!(rx.try_recv().is_err());
     }
 

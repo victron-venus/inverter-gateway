@@ -225,6 +225,7 @@ impl MqttBridge {
                         // request redelivery after their originating state changes.
                         let qos = if request.is_water_command()
                             || topic == &format!("{inverter_prefix}/cmd/ess_mode")
+                            || topic == &format!("{inverter_prefix}/cmd/set_ess_mode")
                             || topic == &format!("{inverter_prefix}/cmd/setpoint_override")
                             || topic == &format!("{inverter_prefix}/cmd/electricity_tariff") {
                             QoS::AtMostOnce
@@ -834,6 +835,7 @@ mod tests {
             "toggle",
             "dry_run",
             "ess_mode",
+            "set_ess_mode",
             "setpoint_override",
             "electricity_tariff",
         ] {

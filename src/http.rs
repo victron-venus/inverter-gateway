@@ -837,7 +837,7 @@ pub(crate) mod tests {
         let data = frame.strip_prefix("data: ").unwrap().trim();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(data).unwrap(),
-            serde_json::json!({"capabilities":{"water_mode":true,"setpoint_override":true,"electricity_tariff":true}, "inverter": null, "battery": {"0/Dc/0/Voltage": 49}})
+            serde_json::json!({"capabilities":{"set_ess_mode":true,"water_mode":true,"setpoint_override":true,"electricity_tariff":true}, "inverter": null, "battery": {"0/Dc/0/Voltage": 49}})
         );
         state.shared.set_connected(false);
         assert!(

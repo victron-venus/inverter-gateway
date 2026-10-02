@@ -195,3 +195,23 @@ The only publication is `W/<configured portal>/pump/<instance>/Mode` with
 retry. Acceptance confirms queueing only; subsequent native `Mode` and `State`
 readback is authoritative. `dbus-pump` owns automation and physical actions.
 The queue deadline ends at broker-client handoff, not physical execution.
+
+### Explicit ESS selection
+
+`capabilities.set_ess_mode: true` advertises `POST /v1/commands/set_ess_mode`.
+It requires the existing write credential, a fresh controller snapshot with
+`inverter.ess_mode.selection_supported: true`, and exactly `mode` plus a bounded
+`request_id`. Allowed modes are `off`, `on`, `optimized_with_battery_life`,
+`optimized_without_battery_life`, `keep_batteries_charged`, and `external_control`.
+
+The gateway publishes once, without retention, to
+`<INVERTER_TOPIC_PREFIX>/cmd/set_ess_mode`. Existing connection-generation and
+queue-expiry guards apply. HTTP success means queued; clients observe
+`inverter.ess_mode.request_id`, `error`, and the actual `selected` state to confirm
+what happened. Do not automatically retry an interrupted command. A controller
+without this capability is unavailable for this command. The legacy `ess_mode`
+empty-body toggle retains its old meaning and is never used as a fallback.
+
+Off and On change the VE.Bus power switch while preserving its ESS profile.
+The four ESS profile choices preserve the power switch. Consequently, turning
+On can report the existing External/Optimized/Keep-charged profile as selected.

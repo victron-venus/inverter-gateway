@@ -45,6 +45,7 @@ pub struct Snapshot {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Capabilities {
+    pub set_ess_mode: bool,
     pub water_mode: bool,
     pub setpoint_override: bool,
     pub electricity_tariff: bool,
@@ -53,6 +54,7 @@ pub struct Capabilities {
 impl Default for Capabilities {
     fn default() -> Self {
         Self {
+            set_ess_mode: true,
             water_mode: true,
             setpoint_override: true,
             electricity_tariff: true,
@@ -96,6 +98,7 @@ pub struct CommandRequest {
 #[derive(Debug, Clone, Copy)]
 enum CommandTarget {
     Controller,
+    EssSelection,
     SetpointOverride,
     ElectricityTariff,
     Water(u32),
@@ -146,6 +149,10 @@ impl Shared {
 
     pub fn controller_command(&self, topic: String, payload: String) -> Option<CommandRequest> {
         self.guarded_command(topic, payload, CommandTarget::Controller)
+    }
+
+    pub fn ess_selection_command(&self, topic: String, payload: String) -> Option<CommandRequest> {
+        self.guarded_command(topic, payload, CommandTarget::EssSelection)
     }
 
     pub fn tariff_command(&self, topic: String, payload: String) -> Option<CommandRequest> {
@@ -370,6 +377,15 @@ impl Telemetry {
     fn command_target_available(&self, target: CommandTarget) -> bool {
         match target {
             CommandTarget::Controller => self.current_snapshot().inverter.is_some(),
+            CommandTarget::EssSelection => {
+                self.current_snapshot()
+                    .inverter
+                    .as_ref()
+                    .and_then(|state| state.get("ess_mode"))
+                    .and_then(|mode| mode.get("selection_supported"))
+                    .and_then(Value::as_bool)
+                    == Some(true)
+            }
             CommandTarget::ElectricityTariff => {
                 self.current_snapshot()
                     .inverter
