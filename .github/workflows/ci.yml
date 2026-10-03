@@ -16,7 +16,34 @@ jobs:
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: test
-        run: cargo test --all-targets
+        run: cargo test --locked --all-targets
     timeout-minutes: 30
+
+  dependency-audit:
+    name: Audit locked Rust dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: Restore the pinned audit tool
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/cargo-audit-0.22.1/bin/cargo-audit
+          key: cargo-audit-0.22.1-${{ runner.os }}-${{ runner.arch }}
+      - name: Install the pinned audit tool if needed
+        shell: bash
+        run: |
+          audit_root="$HOME/.cache/cargo-audit-0.22.1"
+          if [ ! -x "$audit_root/bin/cargo-audit" ]; then
+            cargo install cargo-audit --version '=0.22.1' --locked --root "$audit_root"
+          fi
+          echo "$audit_root/bin" >> "$GITHUB_PATH"
+      - name: Check the committed lock against current RustSec advisories
+        run: cargo audit --json

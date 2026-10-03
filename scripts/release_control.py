@@ -856,9 +856,12 @@ def closed_push_cycle(gh: GitHub, base: str, kind: str) -> dict | None:
     if kind != "push":
         return None
     tag = f"v{version(base)}"
-    ref = gh.optional(f"git/ref/tags/{quote(tag, safe='')}")
-    if ref is None:
-        return None
+    try:
+        ref = gh.api(f"git/ref/tags/{quote(tag, safe='')}")
+    except GitHubError as error:
+        if error.not_found:
+            return None
+        raise
     require(
         isinstance(ref, dict)
         and ref.get("ref") == f"refs/tags/{tag}"

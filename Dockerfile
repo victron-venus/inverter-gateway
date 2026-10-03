@@ -5,13 +5,14 @@ RUN apk add --no-cache musl-dev
 WORKDIR /app
 
 # Cache deps
-COPY Cargo.toml Cargo.lock* ./
+COPY Cargo.toml Cargo.lock ./
+COPY vendor ./vendor
 RUN mkdir src && echo "fn main() {}" > src/main.rs && \
-    cargo build --release && \
+    cargo build --locked --release && \
     rm -rf src
 
 COPY . .
-RUN touch src/main.rs && cargo build --release
+RUN touch src/main.rs && cargo build --locked --release
 
 # Stage 2: minimal runtime
 FROM alpine:3.20

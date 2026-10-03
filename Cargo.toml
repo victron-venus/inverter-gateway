@@ -34,3 +34,7 @@ tokio = { version = "1", features = ["rt", "macros"] }
 [dependencies.tokio-stream]
 version = "0.1"
 features = ["sync"]
+
+# Temporary upstream-compatible TLS dependency repair; see vendor/README.md.
+[patch.crates-io]
+rumqttc = { path = "vendor/rumqttc-0.25.1" }

@@ -40,7 +40,7 @@ class AutomaticBetaPreparationTests(unittest.TestCase):
 
     def test_existing_stable_tag_closes_only_push_cycle(self):
         gh = Mock()
-        gh.optional.return_value = {
+        gh.api.return_value = {
             "ref": "refs/tags/v1.2.3",
             "object": {"type": "commit", "sha": SHA},
         }
@@ -48,11 +48,11 @@ class AutomaticBetaPreparationTests(unittest.TestCase):
         self.assertEqual(result["status"], "version-required")
         self.assertEqual(result["build"], "false")
         self.assertEqual(result["version"], "1.2.3")
-        gh.optional.assert_called_once_with("git/ref/tags/v1.2.3")
+        gh.api.assert_called_once_with("git/ref/tags/v1.2.3")
         for kind in ("workflow_dispatch", "schedule"):
             gh.reset_mock()
             self.assertIsNone(rc.closed_push_cycle(gh, "1.2.3", kind))
-            gh.optional.assert_not_called()
+            gh.api.assert_not_called()
 
     def test_missing_tag_continues_but_api_errors_cannot_authorize_skip(self):
         gh = rc.GitHub(REPO)
@@ -69,11 +69,12 @@ class AutomaticBetaPreparationTests(unittest.TestCase):
     def test_malformed_or_wrong_tag_response_fails_closed(self):
         gh = Mock()
         for ref in (
+            None,
             {},
             [],
             {"ref": "refs/tags/v1.2.4", "object": {"type": "commit", "sha": SHA}},
         ):
-            gh.optional.return_value = ref
+            gh.api.return_value = ref
             with (
                 self.subTest(ref=ref),
                 self.assertRaisesRegex(rc.ReleaseError, "Invalid stable tag"),
