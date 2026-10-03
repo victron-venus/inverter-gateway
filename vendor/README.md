@@ -2,7 +2,9 @@
 
 `rumqttc-0.25.1/` comes from the published crates.io rumqttc 0.25.1 archive.
 The unused upstream development Cargo.lock is omitted so there is only one
-resolved dependency graph. The Apache-2.0 LICENSE is added from its exact
+resolved dependency graph. The unused certs/generate.sh development helper is
+also omitted: the application generates its own test certificates and does not
+need an upstream network/bootstrap script. The Apache-2.0 LICENSE is added from its exact
 upstream source commit f1e9e8d558783f942993046679cdf3c8c3a3d36b.
 Original archive SHA256:
 `0feff8d882bff0b2fddaf99355a10336d43dd3ed44204f85ece28cf9626ab519`.
