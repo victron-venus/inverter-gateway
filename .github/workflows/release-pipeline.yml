@@ -45,7 +45,7 @@ jobs:
       run: ${{ steps.scope.outputs.run }}
       reason: ${{ steps.scope.outputs.reason }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -68,9 +68,10 @@ jobs:
       channel: ${{ steps.metadata.outputs.channel }}
       version: ${{ steps.metadata.outputs.version }}
       build: ${{ steps.metadata.outputs.build }}
+      status: ${{ steps.metadata.outputs.status }}
       plan_artifact: ${{ steps.metadata.outputs.plan_artifact }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -81,7 +82,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - name: Store exact version plan before building
         if: ${{ steps.metadata.outputs.build == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.metadata.outputs.plan_artifact }}
           path: .release-plan.json
@@ -93,7 +94,7 @@ jobs:
       actions: read
   checks:
     needs: prepare
-    if: ${{ needs.prepare.outputs.build == 'true' }}
+    if: ${{ needs.prepare.outputs.build == 'true' || needs.prepare.outputs.status == 'version-required' }}
     uses: ./.github/workflows/quality-gate.yml
     with:
       force-full: true
@@ -119,7 +120,8 @@ jobs:
       - prepare
       - checks
       - build
-    if: ${{ always() && needs.prepare.outputs.build == 'true' }}
+    if: ${{ always() && (needs.prepare.outputs.build == 'true' || needs.prepare.outputs.status == 'version-required')
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -129,15 +131,19 @@ jobs:
           python3 - <<'PY'
           import json, os
           results = json.loads(os.environ['RESULTS'])
-          failed = {name: value['result'] for name, value in results.items() if value['result'] != 'success'}
-          if not results or failed:
+          expected = dict.fromkeys(('prepare', 'checks', 'build'), 'success')
+          if results.get('prepare', {}).get('outputs', {}).get('status') == 'version-required':
+              expected['build'] = 'skipped'
+          failed = {name: results.get(name, {}).get('result') for name, result in expected.items() if results.get(name, {}).get('result') != result}
+          if failed:
               raise SystemExit(f'Release blocked: {failed}')
           PY
   candidate:
     needs:
       - prepare
       - gate
-    if: ${{ needs.prepare.outputs.channel != 'stable' && vars.RELEASE_CHANNELS_ENABLED == 'true' }}
+    if: ${{ needs.prepare.outputs.build == 'true' && needs.prepare.outputs.channel != 'stable' && vars.RELEASE_CHANNELS_ENABLED
+      == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -145,15 +151,15 @@ jobs:
       actions: read
     steps:
       - &id001
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Download the plan used by every build
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.prepare.outputs.plan_artifact }}
           path: .
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: release-assets*
           path: .release-download
@@ -169,7 +175,7 @@ jobs:
       - name: Store immutable promotion evidence
         if: ${{ steps.publication.outputs.status != 'superseded' && steps.publication.outputs.status != 'reused'
           }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-evidence
           path: .release-evidence/release-manifest.json
@@ -203,15 +209,15 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Download the plan used by every build
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.prepare.outputs.plan_artifact }}
           path: .
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: release-assets*
           path: .release-download
@@ -227,7 +233,7 @@ jobs:
       - name: Store immutable promotion evidence
         if: ${{ steps.publication.outputs.status != 'superseded' && steps.publication.outputs.status != 'reused'
           }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-evidence
           path: .release-evidence/release-manifest.json
