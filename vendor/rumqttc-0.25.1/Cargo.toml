@@ -109,11 +109,6 @@ name = "syncrecv_v5"
 path = "examples/syncrecv_v5.rs"
 
 [[example]]
-name = "tls"
-path = "examples/tls.rs"
-required-features = ["use-rustls"]
-
-[[example]]
 name = "tls2"
 path = "examples/tls2.rs"
 required-features = ["use-rustls"]

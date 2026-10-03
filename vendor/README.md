@@ -4,14 +4,17 @@
 The unused upstream development Cargo.lock is omitted so there is only one
 resolved dependency graph. The unused certs/generate.sh development helper is
 also omitted: the application generates its own test certificates and does not
-need an upstream network/bootstrap script. The Apache-2.0 LICENSE is added from its exact
-upstream source commit f1e9e8d558783f942993046679cdf3c8c3a3d36b.
+need an upstream network/bootstrap script. The unused `examples/tls.rs` sample
+and its Cargo example targets are omitted because they embed demonstration
+credentials; the application supplies operator-configured credentials. The
+Apache-2.0 LICENSE is added from its exact upstream source commit f1e9e8d558783f942993046679cdf3c8c3a3d36b.
 Original archive SHA256:
 `0feff8d882bff0b2fddaf99355a10336d43dd3ed44204f85ece28cf9626ab519`.
 
-The only upstream-file changes raise the `rustls-webpki` requirement from
-`0.102.8` to `0.103.13` in the normalized and original Cargo manifests. No Rust
-source is changed. Cargo.lock resolves the patched dependency to 0.103.15.
+Besides the omitted development files and example targets, the Cargo manifests
+only raise the `rustls-webpki` requirement from `0.102.8` to `0.103.13`. All retained
+Rust source, including the complete runtime library, is unchanged. Cargo.lock
+resolves the patched dependency to 0.103.15.
 The 0.102.x dependency is vulnerable to RUSTSEC-2026-0049, RUSTSEC-2026-0098,
 RUSTSEC-2026-0099 and RUSTSEC-2026-0104; the current upstream release still
 requires it. See upstream issue https://github.com/bytebeamio/rumqtt/issues/1067
