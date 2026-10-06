@@ -302,3 +302,16 @@ CI runs the same three commands on every PR.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Related Projects
+
+- [inverter-desktop](https://github.com/victron-venus/inverter-desktop) — native remote client for the authenticated snapshot/SSE API.
+- [inverter-dashboard-go](https://github.com/victron-venus/inverter-dashboard-go) — web dashboard with a gateway-backed deployment mode.
+- [inverter-web-vitrine](https://github.com/victron-venus/inverter-web-vitrine) — read-only public status page using a server-side authenticated proxy.
+- [terraform-cloudflare-inverter-gateway](https://github.com/victron-venus/terraform-cloudflare-inverter-gateway) — reusable Cloudflare Access policies and service-token configuration.
+- [amazon-echo-home-voice](https://github.com/4alvit/amazon-echo-home-voice) — Alexa adapter for the read-only energy reports.
+- [google-home-voice-stats](https://github.com/4alvit/google-home-voice-stats) — voice and display integration that consumes the energy API.
+
+Browse the [public project catalog](https://victron-venus.github.io/.github/projects.html)
+for other Venus OS packages and companion tools. Each project documents its own
+installation, compatibility and release requirements.
