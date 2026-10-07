@@ -1,9 +1,6 @@
 {
   "version_file": "Cargo.toml",
-  "validation_workflows": [
-    "ci.yml",
-    "codeql.yml"
-  ],
+  "validation_workflows": ["ci.yml", "codeql.yml", "dependency-review.yml"],
   "artifact_pattern": "release-assets*",
   "local_checks": [
     "cargo fmt --all -- --check",
