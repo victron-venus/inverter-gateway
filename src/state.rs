@@ -376,20 +376,16 @@ impl Shared {
 impl Telemetry {
     fn command_target_available(&self, target: CommandTarget) -> bool {
         match target {
-            CommandTarget::Controller => self.current_snapshot().inverter.is_some(),
+            CommandTarget::Controller => self.fresh_inverter().is_some(),
             CommandTarget::EssSelection => {
-                self.current_snapshot()
-                    .inverter
-                    .as_ref()
+                self.fresh_inverter()
                     .and_then(|state| state.get("ess_mode"))
                     .and_then(|mode| mode.get("selection_supported"))
                     .and_then(Value::as_bool)
                     == Some(true)
             }
             CommandTarget::ElectricityTariff => {
-                self.current_snapshot()
-                    .inverter
-                    .as_ref()
+                self.fresh_inverter()
                     .and_then(|inverter| {
                         inverter
                             .get("ui_config")
@@ -399,11 +395,8 @@ impl Telemetry {
                     == Some(true)
             }
             CommandTarget::SetpointOverride => self
-                .current_snapshot()
-                .inverter
-                .as_ref()
-                .and_then(|inverter| inverter.get("setpoint_override"))
-                .is_some_and(Value::is_object),
+                .fresh_inverter()
+                .is_some_and(|_| self.setpoint_override.is_object()),
             CommandTarget::Water(instance) => {
                 let pump = &self.snapshot.pump;
                 let valid_mode = pump
@@ -416,6 +409,19 @@ impl Telemetry {
                 valid_mode && connected
             }
         }
+    }
+
+    /// Borrow the controller map only while its receipt is present and its age
+    /// is not greater than 120 seconds. This does not clone snapshot buckets
+    /// and does not read the embedded acknowledgement field.
+    fn fresh_inverter(&self) -> Option<&serde_json::Map<String, Value>> {
+        if self
+            .inverter_received_at
+            .is_none_or(|at| at.elapsed() > Duration::from_secs(120))
+        {
+            return None;
+        }
+        self.snapshot.inverter.as_ref()
     }
 
     fn current_snapshot(&self) -> Snapshot {
@@ -1257,5 +1263,88 @@ mod tests {
             .alarms
             .text
             .contains("No active alarms"));
+    }
+
+    #[test]
+    fn borrowed_predicate_rejects_embedded_ack_revokes_ess_and_keeps_water() {
+        let shared = Shared::new();
+        shared.set_connected(true);
+        let override_cmd = || {
+            shared.setpoint_override_command(
+                "site/control/cmd/setpoint_override".into(),
+                "{\"value\":null}".into(),
+            )
+        };
+        shared.update_inverter(json!({
+            "booleans": {},
+            "setpoint_override": {"value": 1, "request_id": "embedded"}
+        }));
+        let before_reject = serde_json::to_string(&shared.snapshot().unwrap()).unwrap();
+        assert!(override_cmd().is_none());
+        assert_eq!(
+            before_reject,
+            serde_json::to_string(&shared.snapshot().unwrap()).unwrap()
+        );
+        let dedicated = json!({"value": null, "last_error": null, "request_id": "dedicated"});
+        shared.update_setpoint_override(dedicated.clone());
+        let queued = override_cmd().unwrap();
+        let before_send = serde_json::to_string(&shared.snapshot().unwrap()).unwrap();
+        assert!(shared.send_if_current(&queued, || {}));
+        assert_eq!(
+            before_send,
+            serde_json::to_string(&shared.snapshot().unwrap()).unwrap()
+        );
+        assert_eq!(
+            shared.snapshot().unwrap().inverter.unwrap()["setpoint_override"]["request_id"],
+            json!("dedicated")
+        );
+        for bad in [Value::Null, json!(true), json!("ack"), json!(1), json!([1])] {
+            shared.update_setpoint_override(bad);
+            assert!(override_cmd().is_none());
+            assert!(!shared.send_if_current(&queued, || panic!("nonobject acknowledgement")));
+        }
+        shared.update_setpoint_override(dedicated);
+        assert!(override_cmd().is_some());
+
+        shared.telemetry.write().inverter_received_at = None;
+        assert!(override_cmd().is_none());
+        assert!(!shared.send_if_current(&queued, || panic!("missing controller timestamp")));
+        update_pump(&shared, "2/Mode", json!(1));
+        let water = shared
+            .water_command("W/test/pump/2/Mode".into(), "{\"value\":1}".into(), 2)
+            .unwrap();
+        assert!(shared.telemetry.read().snapshot.inverter.is_some());
+        assert!(shared.send_if_current(&water, || {}));
+
+        let ess = || shared.ess_selection_command("site/control/cmd/ess".into(), "{}".into());
+        shared.update_inverter(json!({"ess_mode": {"selection_supported": true}}));
+        let ess_queued = ess().unwrap();
+        for bad in [
+            json!({"ess_mode": {"selection_supported": false}}),
+            json!({"ess_mode": {"selection_supported": "true"}}),
+            json!({"ess_mode": {"selection_supported": 1}}),
+            json!({"ess_mode": {}}),
+            json!({}),
+        ] {
+            shared.update_inverter(bad);
+            assert!(ess().is_none());
+            assert!(!shared.send_if_current(&ess_queued, || panic!("ess capability revoked")));
+        }
+        shared.update_inverter(json!({"ess_mode": {"selection_supported": true}}));
+        shared.telemetry.write().inverter_received_at =
+            Some(Instant::now() - Duration::from_secs(121));
+        assert!(ess().is_none());
+        assert!(!shared.send_if_current(&ess_queued, || panic!("stale controller")));
+        shared.telemetry.write().inverter_received_at = None;
+        assert!(ess().is_none());
+        assert!(shared.send_if_current(&water, || {}));
+
+        shared.update_inverter(json!({"ess_mode": {"selection_supported": true}}));
+        let crossed = ess().unwrap();
+        shared.set_connected(false);
+        shared.set_connected(true);
+        shared.update_inverter(json!({"ess_mode": {"selection_supported": true}}));
+        assert!(!shared.send_if_current(&crossed, || panic!("ess crossed connection")));
+        assert!(shared.send_if_current(&ess().unwrap(), || {}));
     }
 }
