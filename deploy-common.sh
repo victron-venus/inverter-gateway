@@ -8,6 +8,7 @@ deploy_common_init() {
   ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env}"
   IMAGE_REPO="${IMAGE_REPO:-ghcr.io/victron-venus/inverter-gateway}"
   export SEPARATOR="=============================================="
+  return
 }
 
 deploy_require_env() {
@@ -36,6 +37,7 @@ deploy_check_ssh() {
   ssh -o BatchMode=yes -o ConnectTimeout=10 "$SSH_HOST" 'echo ok' >/dev/null
   echo ">>> Ensuring remote directory..."
   ssh "$SSH_HOST" "mkdir -p '$REMOTE_DIR'"
+  return
 }
 
 deploy_rsync() {
@@ -59,6 +61,7 @@ deploy_rsync() {
     "${excludes[@]}" \
     "$SCRIPT_DIR/" "$SSH_HOST:$REMOTE_DIR/"
   ssh "$SSH_HOST" "cd '$REMOTE_DIR' && if [ ! -f docker-compose.yml ] && [ -f docker-compose.example.yml ]; then cp docker-compose.example.yml docker-compose.yml; fi"
+  return
 }
 
 deploy_install_env() {
@@ -67,6 +70,7 @@ deploy_install_env() {
   rsync -az -e "ssh -o BatchMode=yes" "$ENV_FILE" "$SSH_HOST:$REMOTE_DIR/.env"
   ssh "$SSH_HOST" "grep -q '^IMAGE_TAG=' '$REMOTE_DIR/.env' && sed -i.bak 's/^IMAGE_TAG=.*/IMAGE_TAG=$image_tag/' '$REMOTE_DIR/.env' && rm -f '$REMOTE_DIR/.env.bak' || echo \"IMAGE_TAG=$image_tag\" >> '$REMOTE_DIR/.env'"
   ssh "$SSH_HOST" "chmod 600 '$REMOTE_DIR/.env'"
+  return
 }
 
 # mode: build | pull
@@ -131,4 +135,5 @@ echo ">>> Health (loopback on host):"
 sleep 3
 curl -fsS http://127.0.0.1:9150/health || echo "(health not ready yet — check compose logs)"
 REMOTE
+  return
 }
