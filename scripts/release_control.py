@@ -1121,21 +1121,42 @@ def _release_sections(text: str, level: int):
         yield title, text[start:end].strip(), visible[start:end]
 
 
+def _release_container_content(line: str) -> str:
+    """Ignore empty Markdown containers without discarding literal code content."""
+    line = line.strip()
+    marker = re.compile(r">|(?:[-+*]|[0-9]{1,9}[.)])(?=[ \t]|$)")
+    position = 0
+    list_item = False
+    while match := marker.match(line, position):
+        list_item = match.group() != ">"
+        position = match.end()
+        whitespace = position
+        while position < len(line) and line[position] in " \t":
+            position += 1
+        if position - whitespace >= 5:
+            # After the container separator, four spaces introduce literal code.
+            return line[whitespace:]
+    content = line[position:]
+    if list_item and content in ("[ ]", "[x]", "[X]"):
+        return ""
+    return content
+
+
 def _release_has_guidance(text: str) -> bool:
     """Require visible content beyond comments, headings and separator markers."""
     for line, heading_allowed, guidance in _release_lines(text):
         if not guidance or not line.strip():
             continue
-        if heading_allowed:
-            if re.match(r" {0,3}#{1,6}(?:[ \t\r\n]|$)", line):
-                continue
-            markers = line.strip().replace(" ", "").replace("\t", "")
-            if (
-                len(markers) >= 3
-                and markers[0] in "-*_"
-                and not markers.strip(markers[0])
-            ):
-                continue
+        if not heading_allowed:
+            return True
+        line = _release_container_content(line)
+        if line.startswith(("    ", "\t")):
+            return True
+        if not line or re.match(r" {0,3}#{1,6}(?:[ \t\r\n]|$)", line):
+            continue
+        markers = line.strip().replace(" ", "").replace("\t", "")
+        if len(markers) >= 3 and markers[0] in "-*_" and not markers.strip(markers[0]):
+            continue
         return True
     return False
 
