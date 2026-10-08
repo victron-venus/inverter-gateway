@@ -88,6 +88,43 @@ def render(text=NOTES, tag="v1.2.3-beta.8", response_change=None):
     return body
 
 
+class ClosingReleaseHeadingsTests(unittest.TestCase):
+    """Accept closing hashes without accepting literal or duplicate headings."""
+
+    def test_closing_hashes_select_version_and_required_guidance(self):
+        for suffix in (" #", " ### \t", "\t########"):
+            for newline in ("\n", "\r\n"):
+                text = NOTES.replace("[1.2.3] - 2026-10-07", "[1.2.3]")
+                text = newline.join(
+                    line + suffix if line.startswith("#") else line
+                    for line in text.split("\n")
+                )
+                with self.subTest(suffix=suffix, newline=newline):
+                    body = render(text)
+                    self.assertIn("## Changes in 1.2.3", body)
+                    self.assertIn("### Upgrade" + suffix.rstrip(), body)
+                    self.assertIn("Reject malformed requests", body)
+                    self.assertNotIn("Do not publish", body)
+                    self.assertNotIn("Do not copy", body)
+
+    def test_closing_hashes_do_not_hide_duplicate_version_sections(self):
+        text = NOTES + "\n## [1.2.3] ##\nDuplicate release.\n"
+        with self.assertRaises(release.ReleaseError):
+            render(text)
+
+    def test_literal_and_escaped_hashes_are_not_guidance_titles(self):
+        for title in (
+            "Upgrade#",
+            r"Upgrade \###",
+            r"Upgrade #\##",
+            "Upgrade ### trailing",
+            "Upgrade\u00a0###",
+        ):
+            text = NOTES.replace("### Upgrade", "### " + title)
+            with self.subTest(title=title), self.assertRaises(release.ReleaseError):
+                render(text)
+
+
 class ReleaseNotesTests(unittest.TestCase):
     def test_empty_higher_level_atx_headings_end_sections(self):
         for heading in ("#", "##"):
