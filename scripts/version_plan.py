@@ -1410,7 +1410,6 @@ class _OciMetadata:
                 "Unsupported OCI attestation layer",
             )
             self.blob(layer, metadata=False)
-        return
 
     def artifact_attestation(self, descriptor, data, attest_config, reference_digest):
         media = descriptor.get("mediaType")
