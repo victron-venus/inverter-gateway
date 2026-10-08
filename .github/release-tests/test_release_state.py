@@ -185,13 +185,12 @@ class PublicationFloorTests(unittest.TestCase):
         self.assertEqual(self.gh.writes, [])
 
     def test_client_rejects_state_file_put_on_main_before_subprocess(self):
-        with (
-            patch.object(state.subprocess, "run") as run,
-            self.assertRaisesRegex(rc.ReleaseError, "branch mismatch"),
-        ):
-            state.StateGitHub(REPO).api(
-                state.WRITE_PATH, "PUT", {"branch": "main", "content": "bad"}
-            )
+        with patch.object(state.subprocess, "run") as run:
+            client = state.StateGitHub(REPO)
+            with self.assertRaisesRegex(rc.ReleaseError, "branch mismatch"):
+                client.api(
+                    state.WRITE_PATH, "PUT", {"branch": "main", "content": "bad"}
+                )
         run.assert_not_called()
 
 
