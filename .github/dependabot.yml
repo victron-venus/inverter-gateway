@@ -4,6 +4,12 @@ updates:
     directory: /
     schedule:
       interval: daily
+    groups:
+      # Keep CodeQL components and shared workflow pins in one reviewed update.
+      ci-workflows:
+        applies-to: version-updates
+        patterns:
+          - "*"
 
   - package-ecosystem: cargo
     directory: /
