@@ -1123,8 +1123,8 @@ def _release_sections(text: str, level: int):
 
 def _release_container_content(line: str) -> str:
     """Ignore empty Markdown containers without discarding literal code content."""
-    line = line.strip()
-    marker = re.compile(r">|(?:[-+*]|[0-9]{1,9}[.)])(?=[ \t]|$)")
+    line = line.expandtabs(4).strip()
+    marker = re.compile(r">|(?:[-+*]|\d{1,9}[.)])(?=[ \t]|$)", re.ASCII)
     position = 0
     list_item = False
     while match := marker.match(line, position):

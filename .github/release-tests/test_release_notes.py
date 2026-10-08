@@ -600,6 +600,7 @@ class ReleaseNotesTests(unittest.TestCase):
                 "> #### Details",
                 "-\n+\n1.",
                 "   >\t- ",
+                "> \t-",
             ):
                 original = (
                     "Review optional site settings before enabling the feature."
@@ -627,6 +628,7 @@ class ReleaseNotesTests(unittest.TestCase):
             "\\-",
             "_",
             "1234567890.",
+            "١.",
             ">     -",
             "-     +",
             ">     ---",
@@ -641,3 +643,11 @@ class ReleaseNotesTests(unittest.TestCase):
             )
             with self.subTest(content=content):
                 self.assertIn(content.strip(), render(text))
+
+    def test_tabbed_containers_preserve_literal_code(self):
+        for content in (">\t\t-", "-\t\t+", "> >\t\t---", ">\t\t####"):
+            text = NOTES.replace(
+                "Review optional site settings before enabling the feature.", content
+            )
+            with self.subTest(content=content):
+                self.assertIn(content, render(text))

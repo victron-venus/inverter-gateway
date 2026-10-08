@@ -86,3 +86,5 @@ Toolkit revision `4895f852f87ca1f27e2bc75e24c5c792e4f95aa6` includes verified st
 The [CodeQL workflow](../.github/workflows/codeql.yml) also analyzes scripts/publish_verified.py and the Python release/provenance helpers. Existing language analyses remain enabled. Each language reports a separate analysis category; review its completed run and findings for the submitted revision. A passing GitHub Code Quality check does not substitute for these security analyses.
 
 Toolkit revision `d8089003f43637ee420fa4cbcccdf11f5d21e469` also rejects empty Markdown lists, task items and quotations as release guidance, while preserving literal examples and lists with substantive text.
+
+The CodeQL configuration also analyzes GitHub Actions in its own analysis category; existing application-language analyses remain enabled.
