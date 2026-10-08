@@ -578,22 +578,28 @@ class ReceiptTests(unittest.TestCase):
 
     def test_changed_or_extra_payload_is_rejected(self):
         self.create()
+        original = (self.assets / "app.bin").read_bytes()
         (self.assets / "app.bin").write_bytes(b"different binary")
+        staged = self.staged()
         with self.assertRaisesRegex(ValueError, "does not match"):
-            receipt.verify_receipts(self.assets, self.plan, self.staged())
+            receipt.verify_receipts(self.assets, self.plan, staged)
+        (self.assets / "app.bin").write_bytes(original)
         (self.assets / "uncovered.bin").write_bytes(b"missing evidence")
-        with self.assertRaises(ValueError):
-            receipt.verify_receipts(self.assets, self.plan, self.staged())
+        staged = self.staged()
+        with self.assertRaisesRegex(ValueError, "payloads lack version input evidence"):
+            receipt.verify_receipts(self.assets, self.plan, staged)
 
     def test_other_plan_or_partial_input_inventory_is_rejected(self):
         self.create()
         other = versions.create_plan("1.2.3", "beta", 2, SHA, self.policy, 52)
+        staged = self.staged()
         with self.assertRaisesRegex(ValueError, "different release plan"):
-            receipt.verify_receipts(self.assets, other, self.staged())
+            receipt.verify_receipts(self.assets, other, staged)
         altered = copy.deepcopy(self.policy)
         altered["versioning"]["files"].append({"path": "missing", "format": "text"})
+        staged = self.staged()
         with self.assertRaisesRegex(ValueError, "every declared"):
-            receipt.verify_receipts(self.assets, self.plan, self.staged(), altered)
+            receipt.verify_receipts(self.assets, self.plan, staged, altered)
 
     def test_symlink_or_empty_assets_never_get_receipt(self):
         (self.assets / "app.bin").unlink()
@@ -1310,8 +1316,9 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
         rc.validate_manifest(
             rc.json_bytes(final_manifest), REPO, "v1.2.3", allow_final=True
         )
+        encoded = rc.json_bytes(final_manifest)
         with self.assertRaisesRegex(rc.ReleaseError, "Only release candidates"):
-            rc.validate_manifest(rc.json_bytes(final_manifest), REPO, "v1.2.3")
+            rc.validate_manifest(encoded, REPO, "v1.2.3")
 
     def test_final_build_rejects_legacy_rc_before_allocating(self):
         self.start_run("stable", 100, legacy_tests.RC_TAG)
