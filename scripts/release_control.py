@@ -1011,6 +1011,58 @@ def verify_uploaded_asset(gh: GitHub, item: dict, path: Path) -> None:
     require(remote == local, "Uploaded bytes differ; draft left unpublished")
 
 
+def _release_fence(line: str) -> tuple[str, int, str] | None:
+    """Recognize a Markdown fence with at most three leading spaces."""
+    content = line.lstrip(" ")
+    if len(line) - len(content) > 3 or not content or content[0] not in "`~":
+        return None
+    marker = content[0]
+    length = len(content) - len(content.lstrip(marker))
+    if length < 3:
+        return None
+    return marker, length, content[length:]
+
+
+def _release_headings(text: str) -> list[tuple[int, str, int, int]]:
+    """Locate conventional release headings outside fenced code examples."""
+    headings = []
+    fence = None
+    offset = 0
+    for line in io.StringIO(text):
+        candidate = _release_fence(line)
+        if fence is not None:
+            if (
+                candidate is not None
+                and candidate[0] == fence[0]
+                and candidate[1] >= fence[1]
+                and not candidate[2].strip(" \t\r\n")
+            ):
+                fence = None
+        elif candidate is not None and (candidate[0] == "~" or "`" not in candidate[2]):
+            fence = candidate[:2]
+        else:
+            level = len(line) - len(line.lstrip("#"))
+            if level in (2, 3) and line[level : level + 1] in (" ", "\t"):
+                headings.append(
+                    (
+                        level,
+                        line[level:].strip(" \t\r\n"),
+                        offset,
+                        offset + len(line),
+                    )
+                )
+        offset += len(line)
+    return headings
+
+
+def _release_sections(text: str, level: int):
+    """Keep section bodies verbatim while excluding example headings."""
+    headings = [heading for heading in _release_headings(text) if heading[0] == level]
+    for index, (_, title, _, start) in enumerate(headings):
+        end = headings[index + 1][2] if index + 1 < len(headings) else len(text)
+        yield title, text[start:end].strip()
+
+
 # pylint: disable-next=too-many-arguments
 def release_notes(gh: GitHub, tag: str, sha: str, provenance: str) -> str:
     """Use reviewed notes at the package source commit, retaining build evidence."""
@@ -1047,28 +1099,23 @@ def release_notes(gh: GitHub, tag: str, sha: str, provenance: str) -> str:
         b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
     ).hexdigest()
     require(response.get("sha") == blob_sha, "Release notes Git blob identity mismatch")
-    sections = re.split(r"^##[ \t]+", changelog, flags=re.MULTILINE)[1:]
     matches = [
-        section.split("\n", 1)[1].strip()
-        for section in sections
-        if "\n" in section
-        and re.fullmatch(
+        section
+        for title, section in _release_sections(changelog, 2)
+        if re.fullmatch(
             rf"\[{re.escape(base_version)}\](?:[ \t]+-[ \t]+[^\n]+)?[ \t]*",
-            section.split("\n", 1)[0],
+            title,
         )
     ]
     require(
         len(matches) == 1 and matches[0], "Release needs one nonempty changelog section"
     )
     notes = matches[0]
+    sections = list(_release_sections(notes, 3))
     for heading in ("Upgrade", "Security"):
-        section = re.search(
-            rf"^###[ \t]+{heading}[ \t]*\n(.*?)(?=^###[ \t]+|\Z)",
-            notes,
-            re.MULTILINE | re.DOTALL,
-        )
+        section = next((body for title, body in sections if title == heading), None)
         require(
-            section and section.group(1).strip(),
+            section,
             f"Release notes need {heading} guidance",
         )
     body = f"## Changes in {base_version}\n\n{notes}\n\n## Build provenance\n\n{provenance}"

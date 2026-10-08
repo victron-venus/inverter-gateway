@@ -88,6 +88,111 @@ def render(text=NOTES, tag="v1.2.3-beta.8", response_change=None):
 
 
 class ReleaseNotesTests(unittest.TestCase):
+    def test_fenced_guidance_cannot_satisfy_real_sections(self):
+        for marker in ("```", "````", "~~~", "~~~~~"):
+            for indentation in ("", " ", "  ", "   "):
+                text = (
+                    "## [1.2.3]\n"
+                    + indentation
+                    + marker
+                    + "markdown\n"
+                    + "### Upgrade\nExample upgrade.\n"
+                    + "### Security\nExample security.\n"
+                    + indentation
+                    + marker
+                    + "\n"
+                )
+                with (
+                    self.subTest(marker=marker, indentation=indentation),
+                    self.assertRaisesRegex(release.ReleaseError, "Upgrade guidance"),
+                ):
+                    render(text)
+
+    def test_fenced_version_headings_do_not_select_or_split_sections(self):
+        for marker in ("```", "~~~~"):
+            example = marker + "markdown\n## [1.2.3]\n## [9.9.9]\n" + marker + "\n"
+            text = example + NOTES.replace("### Fixed", example + "### Fixed")
+            body = render(text)
+            self.assertIn(example, body)
+            self.assertIn("Preserve unavailable telemetry", body)
+            self.assertNotIn("Do not publish", body)
+            self.assertNotIn("Do not copy", body)
+
+    def test_fence_closes_only_with_matching_marker_and_sufficient_length(self):
+        for opening, false_closer in (
+            ("````", "```"),
+            ("```", "~~~"),
+            ("~~~~", "~~~"),
+            ("~~~", "```"),
+            ("```", "``` trailing text"),
+            ("```", "    ```"),
+            ("```", "```\u00a0"),
+        ):
+            text = (
+                "## [1.2.3]\n"
+                + opening
+                + "\n"
+                + false_closer
+                + "\n### Upgrade\nExample upgrade.\n### Security\nExample security.\n"
+            )
+            with (
+                self.subTest(opening=opening, false_closer=false_closer),
+                self.assertRaisesRegex(release.ReleaseError, "Upgrade guidance"),
+            ):
+                render(text)
+
+    def test_longer_matching_fences_restore_heading_recognition(self):
+        for marker in ("```", "~~~"):
+            prefix = marker + "text\n## [1.2.3]\n   " + marker * 2 + " \t\n"
+            self.assertEqual(render(prefix + NOTES), render(NOTES))
+
+    def test_unclosed_fences_keep_following_headings_inside_example(self):
+        for marker in ("```", "~~~"):
+            with self.subTest(marker=marker):
+                with self.assertRaisesRegex(release.ReleaseError, "changelog section"):
+                    render(marker + "markdown\n" + NOTES)
+                text = NOTES.replace("### Upgrade", marker + "\n### Upgrade")
+                with self.assertRaisesRegex(release.ReleaseError, "Upgrade guidance"):
+                    render(text)
+
+    def test_real_guidance_can_contain_fenced_commands_verbatim(self):
+        for marker in ("```", "~~~"):
+            command = marker + "shell\nupgrade --check\n" + marker
+            text = NOTES.replace(
+                "Review optional site settings before enabling the feature.", command
+            )
+            self.assertIn(command, render(text))
+            self.assertEqual(render(text.replace("\n", "\r\n")), render(text))
+
+    def test_invalid_backtick_info_and_inline_markers_do_not_start_fences(self):
+        for prefix in ("```invalid`info\n", "Text with ``` inline markers.\n"):
+            self.assertEqual(render(prefix + NOTES), render(NOTES))
+
+    def test_unicode_line_separator_does_not_introduce_a_heading(self):
+        text = "## [1.2.3]\nExample\u2028### Upgrade\nExample upgrade.\n### Security\nSafe.\n"
+        with self.assertRaisesRegex(release.ReleaseError, "Upgrade guidance"):
+            render(text)
+
+    def test_fenced_only_notes_fail_before_any_remote_mutation(self):
+        text = "## [1.2.3]\n```\n### Upgrade\nExample.\n### Security\nExample.\n```\n"
+        github = StrictGitHub(contents(text))
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(
+                release,
+                "source_policy_snapshot",
+                return_value={"data": {"release_notes": "CHANGELOG.md"}},
+            ),
+            self.assertRaisesRegex(release.ReleaseError, "Upgrade guidance"),
+        ):
+            release.publish(
+                github, "v1.2.3", SOURCE, Path(directory), False, "provenance"
+            )
+        self.assertEqual(
+            github.calls, [("GET", f"contents/CHANGELOG.md?ref={SOURCE}", None)]
+        )
+        self.assertEqual(github.writes, [])
+
     def test_exact_base_and_provenance(self):
         for tag in ("v1.2.3", "v1.2.3-rc.1", "v1.2.3-beta.8"):
             with self.subTest(tag=tag):

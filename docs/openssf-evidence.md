@@ -65,3 +65,8 @@ from `venus-os-ci-toolkit` revision `9dd211a`, including bounded TOML parsing an
 source-bound release-note validation. Consumer release-contract suites verify
 the imported engine. Workflow-validator refactoring preserves this repository's
 existing policy; it does not imply all newer toolkit workflow guarantees are enabled.
+
+Release guidance parsing also imports toolkit revision `ec99f37`: Markdown code
+fences cannot provide or split the required version, Upgrade or Security headings.
+The release contract suite tests matching fence markers and lengths, unclosed
+examples, CRLF input and rejection before any remote publication writes.
