@@ -100,7 +100,8 @@ class ConsumerVersioningTests(unittest.TestCase):
         self.source = self.command("git", "rev-parse", "HEAD").strip()
 
     def command(self, *args):
-        return subprocess.check_output(
+        # Isolated test fixture; explicit argv, never shell interpolation.
+        return subprocess.check_output(  # nosec B603
             args, cwd=self.root, text=True, stderr=subprocess.STDOUT
         )
 
@@ -186,6 +187,9 @@ class ConsumerVersioningTests(unittest.TestCase):
         path.write_text(json.dumps(evidence), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "every declared version source"):
             stage_release_assets.stage(self.root, "native", ["dist/*.tar.gz"])
+        self.assertFalse(
+            (self.root / "release-assets/native/release-inputs-native.json").exists()
+        )
 
     def test_staging_rejects_source_changes_after_overlay(self):
         self.freeze()
@@ -220,6 +224,33 @@ class ConsumerVersioningTests(unittest.TestCase):
                         "org.opencontainers.image.revision": self.source,
                     },
                 )
+
+    def test_base_rejects_non_ascii_digits_and_noncanonical_versions(self):
+        for version in ("1٢.2.3", "1.2٢.3", "1.2.3٢", "１.2.3", "01.2.3", "1.2.3\n"):
+            with self.subTest(version=version):
+                with self.assertRaisesRegex(ValueError, "numeric base"):
+                    release_version_adapter.checked_version(self.root, version, "beta")
+        self.assertFalse((self.root / ".release-plan.json").exists())
+
+    def test_staging_rejects_ambiguous_or_unsafe_payloads_before_output(self):
+        self.freeze()
+        self.archive()
+        other = self.root / "other"
+        other.mkdir()
+        (other / "APP.TAR.GZ").write_bytes(b"different payload with colliding name")
+        linked = self.root / "linked-dist"
+        linked.symlink_to(self.root / "dist", target_is_directory=True)
+        for patterns, message in (
+            (["../outside.tar.gz"], "inside the checkout"),
+            (["missing/*.tar.gz"], "matched no files"),
+            (["dist"], "regular file"),
+            (["dist/*.tar.gz", "other/*"], "Duplicate release payload basename"),
+            (["linked-dist/*.tar.gz"], "symlink"),
+        ):
+            with self.subTest(patterns=patterns):
+                with self.assertRaisesRegex(ValueError, message):
+                    stage_release_assets.stage(self.root, "native", patterns)
+                self.assertFalse((self.root / "release-assets").exists())
 
 
 if __name__ == "__main__":

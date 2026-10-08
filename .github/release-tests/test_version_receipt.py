@@ -248,6 +248,40 @@ class CurrentBuildInputsTests(unittest.TestCase):
             self.create()
         self.assertTrue(self.output.is_file())
 
+    def test_invalid_package_name_fails_before_toolchain_or_receipt_write(self):
+        (self.assets / "unsafe package.bin").write_bytes(b"not a safe asset name")
+        with patch.object(version_receipt, "capture_toolchain") as toolchain:
+            with self.assertRaisesRegex(ValueError, "Unsafe or duplicate package name"):
+                self.create()
+        toolchain.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_publisher_rejects_mutated_receipt_identity_and_coverage(self):
+        original = self.create()
+        artifact = original["artifacts"][0]
+        for changes, message in (
+            ({"plan_sha256": "0" * 64}, "different release plan"),
+            ({"source_sha": "b" * 40}, "source-bound"),
+            ({"toolchain": {}}, "toolchain versions"),
+            ({"effective_inputs_sha256": "0" * 64}, "input digest"),
+            ({"artifacts": []}, "Empty receipt artifact"),
+            ({"artifacts": [{**artifact, "sha256": "0" * 64}]}, "does not match staged payload"),
+            ({"artifacts": [artifact, artifact]}, "duplicate or recursive"),
+            ({"artifacts": [{**artifact, "name": self.output.name}]}, "duplicate or recursive"),
+        ):
+            with self.subTest(message=message, changes=changes):
+                value = {**original, **changes}
+                self.output.write_bytes(version_receipt.canonical(value))
+                payloads = [
+                    {"name": path.name, "size": path.stat().st_size,
+                     "sha256": version_receipt.sha256(path.read_bytes())}
+                    for path in self.assets.iterdir()
+                ]
+                with self.assertRaisesRegex(ValueError, message):
+                    version_receipt.verify_receipts(
+                        self.assets, self.plan, payloads, self.policy
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

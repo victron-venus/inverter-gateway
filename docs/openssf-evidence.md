@@ -70,3 +70,5 @@ Release guidance parsing also imports toolkit revision `ec99f37`: Markdown code
 fences cannot provide or split the required version, Upgrade or Security headings.
 The release contract suite tests matching fence markers and lengths, unclosed
 examples, CRLF input and rejection before any remote publication writes.
+
+Release guidance and validation helpers also import reviewed toolkit revision `cab6d07`: comments and empty code fences cannot satisfy upgrade/security guidance, while visible literal examples remain valid. Receipt size limits are enforced before parsing. The existing consumer workflow policy is retained.

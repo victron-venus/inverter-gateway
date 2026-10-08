@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-# Vendored release toolkit; change the toolkit source, then render again.
-# ruff: noqa
-# mypy: ignore-errors
-# pylint: skip-file
-# fmt: off
 """Publish candidates and promote checked RCs inside the guarded Actions workflow."""
 
 # Keep the audited engine self-contained when vendored into application repos.
@@ -1023,44 +1018,108 @@ def _release_fence(line: str) -> tuple[str, int, str] | None:
     return marker, length, content[length:]
 
 
-def _release_headings(text: str) -> list[tuple[int, str, int, int]]:
-    """Locate conventional release headings outside fenced code examples."""
-    headings = []
+def _release_code_span_ends(line: str) -> dict[int, int]:
+    """Find equal-length inline backtick pairs in one linear scan and reverse pass."""
+    runs = [(match.start(), match.end()) for match in re.finditer(r"`+", line)]
+    following = {}
+    ends = {}
+    for start, end in reversed(runs):
+        length = end - start
+        if length in following:
+            ends[start] = following[length]
+        following[length] = end
+    return ends
+
+
+def _release_comment_line(line: str, comment: bool) -> tuple[str, bool]:
+    """Mask comments without shifting offsets or interpreting literal inline code."""
+    visible = list(line)
+    code_ends = _release_code_span_ends(line)
+    position = 0
+    while position < len(line):
+        if comment:
+            end = line.find("-->", position)
+            stop = len(line) if end < 0 else end + 3
+            visible[position:stop] = [
+                char if char in "\r\n" else " " for char in line[position:stop]
+            ]
+            position = stop
+            comment = end < 0
+        elif line[position] == "\\":
+            position += 2
+        elif position in code_ends:
+            position = code_ends[position]
+        elif line.startswith("<!--", position):
+            comment = True
+        else:
+            position += 1
+    return "".join(visible), comment
+
+
+def _release_fence_closes(candidate, fence) -> bool:
+    return (
+        candidate is not None
+        and candidate[0] == fence[0]
+        and candidate[1] >= fence[1]
+        and not candidate[2].strip(" \t\r\n")
+    )
+
+
+def _release_lines(text: str):
+    """Yield offset-preserving text, heading eligibility and visible guidance."""
     fence = None
-    offset = 0
+    comment = False
     for line in io.StringIO(text):
         candidate = _release_fence(line)
         if fence is not None:
-            if (
-                candidate is not None
-                and candidate[0] == fence[0]
-                and candidate[1] >= fence[1]
-                and not candidate[2].strip(" \t\r\n")
-            ):
+            closes = _release_fence_closes(candidate, fence)
+            yield line, False, not closes
+            if closes:
                 fence = None
-        elif candidate is not None and (candidate[0] == "~" or "`" not in candidate[2]):
+        elif (
+            not comment
+            and candidate is not None
+            and (candidate[0] == "~" or "`" not in candidate[2])
+        ):
             fence = candidate[:2]
+            yield line, False, False
+        elif not comment and line.startswith(("    ", "\t")):
+            yield line, False, True
         else:
-            level = len(line) - len(line.lstrip("#"))
-            if level in (2, 3) and line[level : level + 1] in (" ", "\t"):
-                headings.append(
-                    (
-                        level,
-                        line[level:].strip(" \t\r\n"),
-                        offset,
-                        offset + len(line),
-                    )
-                )
+            visible, comment = _release_comment_line(line, comment)
+            yield visible, True, True
+
+
+def _release_headings(text: str) -> list[tuple[int, str, int, int]]:
+    """Locate release headings outside comments and fenced code examples."""
+    headings = []
+    offset = 0
+    for line, heading_allowed, _ in _release_lines(text):
+        level = len(line) - len(line.lstrip("#"))
+        if (
+            heading_allowed
+            and level in (2, 3)
+            and line[level : level + 1] in (" ", "\t")
+        ):
+            headings.append(
+                (level, line[level:].strip(" \t\r\n"), offset, offset + len(line))
+            )
         offset += len(line)
     return headings
 
 
 def _release_sections(text: str, level: int):
-    """Keep section bodies verbatim while excluding example headings."""
+    """Keep original bodies plus comment-masked bodies for validation."""
+    visible = "".join(line for line, _, _ in _release_lines(text))
     headings = [heading for heading in _release_headings(text) if heading[0] == level]
     for index, (_, title, _, start) in enumerate(headings):
         end = headings[index + 1][2] if index + 1 < len(headings) else len(text)
-        yield title, text[start:end].strip()
+        yield title, text[start:end].strip(), visible[start:end]
+
+
+def _release_has_guidance(text: str) -> bool:
+    """Comments and empty fence markers cannot replace readable release guidance."""
+    return any(line.strip() for line, _, guidance in _release_lines(text) if guidance)
 
 
 # pylint: disable-next=too-many-arguments
@@ -1100,22 +1159,23 @@ def release_notes(gh: GitHub, tag: str, sha: str, provenance: str) -> str:
     ).hexdigest()
     require(response.get("sha") == blob_sha, "Release notes Git blob identity mismatch")
     matches = [
-        section
-        for title, section in _release_sections(changelog, 2)
+        (section, visible)
+        for title, section, visible in _release_sections(changelog, 2)
         if re.fullmatch(
             rf"\[{re.escape(base_version)}\](?:[ \t]+-[ \t]+[^\n]+)?[ \t]*",
             title,
         )
     ]
     require(
-        len(matches) == 1 and matches[0], "Release needs one nonempty changelog section"
+        len(matches) == 1 and matches[0][0],
+        "Release needs one nonempty changelog section",
     )
-    notes = matches[0]
-    sections = list(_release_sections(notes, 3))
+    notes, visible_notes = matches[0]
+    sections = list(_release_sections(visible_notes, 3))
     for heading in ("Upgrade", "Security"):
-        section = next((body for title, body in sections if title == heading), None)
+        section = next((body for title, _, body in sections if title == heading), None)
         require(
-            section,
+            section and _release_has_guidance(section),
             f"Release notes need {heading} guidance",
         )
     body = f"## Changes in {base_version}\n\n{notes}\n\n## Build provenance\n\n{provenance}"
@@ -1309,6 +1369,34 @@ def candidate(args) -> dict:
     }
 
 
+def _validate_manifest_assets(manifest):
+    assets = manifest.get("assets")
+    require(isinstance(assets, list) and assets, "Manifest contains no assets")
+    names = set()
+    for item in assets:
+        require(isinstance(item, dict), "Invalid manifest asset")
+        name = item.get("name")
+        require(
+            isinstance(name, str)
+            and NAME_RE.fullmatch(name)
+            and name.casefold() != MANIFEST.casefold(),
+            "Unsafe manifest asset name",
+        )
+        require(name.casefold() not in names, "Duplicate manifest asset name")
+        names.add(name.casefold())
+        require(
+            # Reject JSON booleans, which isinstance(value, int) would accept.
+            type(item.get("size")) is int  # pylint: disable=unidiomatic-typecheck
+            and item["size"] >= 0,
+            "Invalid manifest asset size",
+        )
+        require(
+            isinstance(item.get("sha256"), str)
+            and re.fullmatch(SHA256_PATTERN, item["sha256"]),
+            "Invalid asset checksum",
+        )
+
+
 # pylint: disable-next=too-many-locals
 def validate_manifest(
     raw: bytes, repo: str, rc_tag: str, allow_final: bool = False
@@ -1400,31 +1488,7 @@ def validate_manifest(
             positive(parent["run_id"], "parent RC run ID") != manifest["run_id"],
             "Final build must use a new run",
         )
-    assets = manifest.get("assets")
-    require(isinstance(assets, list) and assets, "Manifest contains no assets")
-    names = set()
-    for item in assets:
-        require(isinstance(item, dict), "Invalid manifest asset")
-        name = item.get("name")
-        require(
-            isinstance(name, str)
-            and NAME_RE.fullmatch(name)
-            and name.casefold() != MANIFEST.casefold(),
-            "Unsafe manifest asset name",
-        )
-        require(name.casefold() not in names, "Duplicate manifest asset name")
-        names.add(name.casefold())
-        require(
-            # Reject JSON booleans, which isinstance(value, int) would accept.
-            type(item.get("size")) is int  # pylint: disable=unidiomatic-typecheck
-            and item["size"] >= 0,
-            "Invalid manifest asset size",
-        )
-        require(
-            isinstance(item.get("sha256"), str)
-            and re.fullmatch(SHA256_PATTERN, item["sha256"]),
-            "Invalid asset checksum",
-        )
+    _validate_manifest_assets(manifest)
     return manifest
 
 

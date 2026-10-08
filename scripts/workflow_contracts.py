@@ -44,31 +44,33 @@ def validate_codeql(workflows):
                 )
 
 
+def _callable_workflow(workflows, visited, filename, chain=()):
+    """Traverse callable workflows, retaining cycle detection before visited pruning."""
+    if filename in chain:
+        raise ValueError(f"Recursive validation: {chain} -> {filename}")
+    if filename in visited:
+        return
+    workflow = workflows[filename]
+    triggers = workflow.get("on", {})
+    if not isinstance(triggers, dict) or "workflow_call" not in triggers:
+        raise ValueError(f"{filename}: missing workflow_call")
+    if set(triggers) - {"workflow_call", "workflow_dispatch"}:
+        raise ValueError(f"{filename}: validation must start through Quality gate")
+    visited.add(filename)
+    for name, job in workflow.get("jobs", {}).items():
+        reference = job.get("uses", "")
+        if reference.startswith("./.github/workflows/"):
+            _callable_workflow(workflows, visited, reference.rsplit("/", 1)[-1], (*chain, filename))
+        elif "runs-on" in job and "timeout-minutes" not in job:
+            raise ValueError(f"{filename}/{name}: an explicit timeout is required")
+
+
 def validate_graph(workflows, validators):
     """Walk callable validators and enforce one orchestration entry point."""
     visited = set()
 
-    def callable_workflow(filename, chain=()):
-        if filename in chain:
-            raise ValueError(f"Recursive validation: {chain} -> {filename}")
-        if filename in visited:
-            return
-        workflow = workflows[filename]
-        triggers = workflow.get("on", {})
-        if not isinstance(triggers, dict) or "workflow_call" not in triggers:
-            raise ValueError(f"{filename}: missing workflow_call")
-        if set(triggers) - {"workflow_call", "workflow_dispatch"}:
-            raise ValueError(f"{filename}: validation must start through Quality gate")
-        visited.add(filename)
-        for name, job in workflow.get("jobs", {}).items():
-            reference = job.get("uses", "")
-            if reference.startswith("./.github/workflows/"):
-                callable_workflow(reference.rsplit("/", 1)[-1], (*chain, filename))
-            elif "runs-on" in job and "timeout-minutes" not in job:
-                raise ValueError(f"{filename}/{name}: an explicit timeout is required")
-
     for filename in validators:
-        callable_workflow(filename)
+        _callable_workflow(workflows, visited, filename)
     return visited
 
 

@@ -19,6 +19,7 @@ class StrictGitHub:
     """Permit only the expected source read and reject all remote mutation."""
 
     def __init__(self, response: dict | None = None):
+        """Queue the allowed read while recording any attempted mutation."""
         self.responses = [] if response is None else [response]
         self.calls = []
         self.writes = []
@@ -278,3 +279,128 @@ class ReleaseNotesTests(unittest.TestCase):
                     re.fullmatch(p, f"contents/CHANGELOG.md?ref={ref}") for p in allowed
                 )
             )
+
+    def test_comment_only_guidance_is_rejected(self):
+        for heading in ("Upgrade", "Security"):
+            for comment in (
+                "<!-- placeholder -->",
+                "<!-- first --> \t <!-- second -->",
+                "<!-- first\nsecond\n-->",
+                "<!-- unclosed",
+            ):
+                text = (
+                    "## [1.2.3]\n### Upgrade\nRead migration instructions.\n"
+                    "### Security\nNo security change.\n"
+                )
+                if heading == "Upgrade":
+                    text = text.replace("Read migration instructions.", comment)
+                else:
+                    text = text.replace("No security change.", comment)
+                with (
+                    self.subTest(heading=heading, comment=comment),
+                    self.assertRaisesRegex(release.ReleaseError, "guidance"),
+                ):
+                    render(text)
+
+    def test_commented_headings_do_not_select_or_split_sections(self):
+        hidden = (
+            "<!--\n## [1.2.3]\n### Upgrade\nHidden migration.\n"
+            "### Security\nHidden security.\n-->\n"
+        )
+        self.assertEqual(render(hidden + NOTES), render(NOTES))
+        text = NOTES.replace(
+            "### Upgrade", "<!--\n## [9.9.9]\n### Upgrade\n-->\n### Upgrade"
+        )
+        self.assertIn("<!--\n## [9.9.9]", render(text))
+        for heading in ("Upgrade", "Security"):
+            with self.subTest(heading=heading):
+                text = NOTES.replace("### " + heading, "<!-- ### " + heading + " -->")
+                with self.assertRaisesRegex(
+                    release.ReleaseError, heading + " guidance"
+                ):
+                    render(text)
+
+    def test_comments_started_on_headings_keep_following_content_hidden(self):
+        for heading in ("## [1.2.3]", "### Upgrade", "### Security"):
+            text = "## [1.2.3]\n### Upgrade\nRead migration.\n### Security\nNo security change.\n"
+            text = text.replace(heading, heading + " <!--")
+            with (
+                self.subTest(heading=heading),
+                self.assertRaisesRegex(release.ReleaseError, "guidance"),
+            ):
+                render(text)
+
+    def test_visible_text_survives_inline_multiline_and_unclosed_comments(self):
+        guidance = "Read <!-- hidden\nprivate --> the migration guide. <!-- another -->"
+        text = NOTES.replace(
+            "Review optional site settings before enabling the feature.", guidance
+        )
+        self.assertIn(guidance, render(text))
+        self.assertEqual(render(text.replace("\n", "\r\n")), render(text))
+        text = (
+            "## [1.2.3]\n### Upgrade\nRead migration.\n"
+            "### Security\nNo security change. <!-- unfinished"
+        )
+        self.assertIn("No security change. <!-- unfinished", render(text))
+
+    def test_comments_do_not_open_fences_or_hide_literal_code(self):
+        hidden_fence = "<!--\n```\n-->\n"
+        self.assertEqual(render(hidden_fence + NOTES), render(NOTES))
+        for guidance in (
+            "```html\n<!-- literal comment -->\n```",
+            "~~~html\n<!-- literal comment -->\n~~~",
+            "`<!-- literal inline comment -->`",
+            "``an embedded ` and <!-- literal comment -->``",
+            "    <!-- literal indented comment -->",
+        ):
+            with self.subTest(guidance=guidance):
+                text = NOTES.replace(
+                    "Review optional site settings before enabling the feature.",
+                    guidance,
+                )
+                self.assertIn(guidance.strip(), render(text))
+
+    def test_empty_fences_are_not_visible_guidance(self):
+        for marker in ("```", "~~~"):
+            text = NOTES.replace(
+                "Review optional site settings before enabling the feature.",
+                marker + "\n\n" + marker,
+            )
+            with (
+                self.subTest(marker=marker),
+                self.assertRaisesRegex(release.ReleaseError, "Upgrade guidance"),
+            ):
+                render(text)
+
+    def test_many_inline_comments_keep_linear_scanning_and_offsets(self):
+        comments = "<!-- x -->" * 10000
+        text = NOTES.replace(
+            "Review optional site settings before enabling the feature.", comments
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "Upgrade guidance"):
+            render(text)
+        text = NOTES.replace(
+            "Review optional site settings before enabling the feature.",
+            comments + "Read migration.",
+        )
+        self.assertIn(comments + "Read migration.", render(text))
+
+    def test_comment_only_notes_fail_before_any_remote_mutation(self):
+        text = "## [1.2.3]\n### Upgrade\n<!-- todo -->\n### Security\nNo security change.\n"
+        github = StrictGitHub(contents(text))
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(
+                release,
+                "source_policy_snapshot",
+                return_value={"data": {"release_notes": "CHANGELOG.md"}},
+            ),
+            self.assertRaisesRegex(release.ReleaseError, "Upgrade guidance"),
+        ):
+            release.publish(
+                github, "v1.2.3", SOURCE, Path(directory), False, "provenance"
+            )
+        self.assertEqual(
+            github.calls, [("GET", f"contents/CHANGELOG.md?ref={SOURCE}", None)]
+        )
+        self.assertEqual(github.writes, [])
