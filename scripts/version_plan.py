@@ -40,7 +40,7 @@ from release_control import atomic_write_bytes
 
 BASE = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\Z", re.ASCII)
 SHA = re.compile(r"[0-9a-f]{40}\Z", re.ASCII)
-NIGHTLY = re.compile(r"[0-9]{14}\.[1-9][0-9]*\.[1-9][0-9]*\Z", re.ASCII)
+NIGHTLY = re.compile(r"\d{14}\.[1-9]\d*\.[1-9]\d*\Z", re.ASCII)
 FORMATS = {
     "json",
     "toml",
