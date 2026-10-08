@@ -52,6 +52,7 @@ API_PATHS = {
         r"actions/runs/[1-9]\d*(?:/artifacts|/attempts/[1-9]\d*/jobs)?",
         r"actions/artifacts/[1-9]\d*/zip",
         r"contents/\.release-policy\.json\?ref=[0-9a-f]{40}",
+        r"contents/CHANGELOG\.md\?ref=[0-9a-f]{40}",
         r"contents/\.github\?ref=[0-9a-f]{40}",
         r"contents/release-version-state\.json\?ref=release-version-state",
         r"git/ref/heads/release-version-state",
@@ -1003,11 +1004,71 @@ def verify_uploaded_asset(gh: GitHub, item: dict, path: Path) -> None:
 
 
 # pylint: disable-next=too-many-arguments
+def release_notes(gh: GitHub, tag: str, sha: str, provenance: str) -> str:
+    """Use reviewed notes at the package source commit, retaining build evidence."""
+    policy = source_policy_snapshot(gh, sha)["data"]
+    source = policy.get("release_notes")
+    if source is None:
+        return provenance
+    require(source == "CHANGELOG.md", "Unsupported release notes source")
+    require(TAG_RE.fullmatch(tag), "Invalid release notes tag")
+    base_version = VERSION_RE.match(tag[1:]).group(0)
+    response = gh.api(f"contents/CHANGELOG.md?ref={sha}")
+    require(
+        isinstance(response, dict)
+        and response.get("type") == "file"
+        and response.get("path") == source
+        and response.get("encoding") == "base64",
+        "Release notes must be a regular CHANGELOG.md at the source commit",
+    )
+    encoded = response.get("content")
+    require(
+        isinstance(encoded, str) and len(encoded) <= 400_000,
+        "Invalid or oversized release notes content",
+    )
+    try:
+        raw = base64.b64decode("".join(encoded.split()), validate=True)
+        changelog = raw.decode("utf-8")
+    except ValueError as exc:
+        raise ReleaseError("Invalid release notes encoding") from exc
+    require(
+        len(raw) <= 250_000 and response.get("size") == len(raw),
+        "Release notes size mismatch",
+    )
+    blob_sha = hashlib.sha1(
+        b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
+    ).hexdigest()
+    require(response.get("sha") == blob_sha, "Release notes Git blob identity mismatch")
+    sections = re.split(r"^##[ \t]+", changelog, flags=re.MULTILINE)[1:]
+    matches = [
+        section.split("\n", 1)[1].strip()
+        for section in sections
+        if "\n" in section
+        and re.fullmatch(
+            rf"\[{re.escape(base_version)}\](?:[ \t]+-[ \t]+[^\n]+)?[ \t]*",
+            section.split("\n", 1)[0],
+        )
+    ]
+    require(len(matches) == 1 and matches[0], "Release needs one nonempty changelog section")
+    notes = matches[0]
+    for heading in ("Upgrade", "Security"):
+        section = re.search(
+            rf"^###[ \t]+{heading}[ \t]*\n(.*?)(?=^###[ \t]+|\Z)",
+            notes,
+            re.MULTILINE | re.DOTALL,
+        )
+        require(section and section.group(1).strip(), f"Release notes need {heading} guidance")
+    body = f"## Changes in {base_version}\n\n{notes}\n\n## Build provenance\n\n{provenance}"
+    require(len(body.encode("utf-8")) <= 125_000, "Release notes are too large")
+    return body
+
+
 def publish(
     gh: GitHub, tag: str, sha: str, directory: Path, prerelease: bool, body: str
 ) -> dict:
     """Keep draft creation, exact-byte upload checks and publication in one transaction."""
     reject_restricted_assets(path.name for path in directory.iterdir())
+    body = release_notes(gh, tag, sha, body)
     ensure_absent(gh, tag)
     check_workflow_publication(gh, sha)
     gh.api("git/refs", "POST", {"ref": f"refs/tags/{tag}", "sha": sha})

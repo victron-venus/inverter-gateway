@@ -1,6 +1,10 @@
 {
   "version_file": "Cargo.toml",
-  "validation_workflows": ["ci.yml", "codeql.yml", "dependency-review.yml"],
+  "validation_workflows": [
+    "ci.yml",
+    "codeql.yml",
+    "dependency-review.yml"
+  ],
   "artifact_pattern": "release-assets*",
   "local_checks": [
     "cargo fmt --all -- --check",
@@ -56,5 +60,6 @@
     ],
     "toolkit_revision": "fca833a9da6b49116444ffd7ac6739e08f9cbc61"
   },
-  "single_entry_ci": true
+  "single_entry_ci": true,
+  "release_notes": "CHANGELOG.md"
 }

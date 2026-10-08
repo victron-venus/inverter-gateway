@@ -55,3 +55,7 @@ Do not equate a green metadata or release job with successful application tests.
 - Link only this project's real awarded badge once the assessment is accepted.
 
 The live assessment, when created, is the source of truth for the badge level. Unverified criteria remain open.
+
+## Release-note source
+
+[CHANGELOG.md](../CHANGELOG.md) contains the current development line's change summary, upgrade impact and security notes. The release policy opts into commit-pinned notes; publication rejects missing or incomplete current-version sections. Historical release bodies still require a separate audit before claiming complete coverage.
