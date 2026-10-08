@@ -76,6 +76,14 @@ class ReleaseNotesTests(unittest.TestCase):
                 self.assertTrue(body.endswith("Original source and validation links."))
                 self.assertIn("## Build provenance", body)
 
+    def test_crlf_notes_preserve_source_byte_verification(self):
+        crlf = NOTES.replace("\n", "\r\n")
+        self.assertEqual(render(crlf), render(NOTES))
+        with self.assertRaisesRegex(release.ReleaseError, "size mismatch"):
+            render(crlf, response_change={"size": len(NOTES.encode())})
+        with self.assertRaisesRegex(release.ReleaseError, "blob identity"):
+            render(crlf, response_change={"sha": contents(NOTES)["sha"]})
+
     def test_missing_or_incomplete_sections(self):
         for text in (
             NOTES.replace("[1.2.3]", "[2.0.0]"),

@@ -1028,7 +1028,7 @@ def release_notes(gh: GitHub, tag: str, sha: str, provenance: str) -> str:
     )
     try:
         raw = base64.b64decode("".join(encoded.split()), validate=True)
-        changelog = raw.decode("utf-8")
+        changelog = raw.decode("utf-8").replace("\r\n", "\n")
     except ValueError as exc:
         raise ReleaseError("Invalid release notes encoding") from exc
     require(
