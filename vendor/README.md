@@ -12,17 +12,28 @@ Original archive SHA256:
 `0feff8d882bff0b2fddaf99355a10336d43dd3ed44204f85ece28cf9626ab519`.
 
 Besides the omitted development files and example targets, the Cargo manifests
-only raise the `rustls-webpki` requirement from `0.102.8` to `0.103.13`. All retained
-Rust source, including the complete runtime library, is unchanged. Cargo.lock
-resolves the patched dependency to 0.103.15.
+raise the `rustls-webpki` requirement from `0.102.8` to `0.103.13`. Cargo.lock
+resolves the patched dependency to 0.103.15. The TLS PEM loader also uses the
+maintained `rustls::pki_types::pem::PemObject` API directly instead of its
+unmaintained `rustls-pemfile` wrapper (RUSTSEC-2025-0134). Certificate chains are
+fully parsed; client keys retain first-key selection for SEC1, PKCS#1 and PKCS#8.
+Malformed certificate chains and sections before the first key still fail;
+trailing key sections remain unread. Parser errors retain the public I/O error
+variant with `InvalidData`; their detail text comes from the maintained parser. All other
+retained runtime Rust source is unchanged.
 The 0.102.x dependency is vulnerable to RUSTSEC-2026-0049, RUSTSEC-2026-0098,
 RUSTSEC-2026-0099 and RUSTSEC-2026-0104; the current upstream release still
 requires it. See upstream issue https://github.com/bytebeamio/rumqtt/issues/1067
 and proposed manifest fix https://github.com/bytebeamio/rumqtt/pull/1037.
 
+The application uses the same maintained PEM reader for MQTT CA files.
+`tests/pem_compatibility.rs` exercises the patched dependency through real local
+TCP/TLS connections, including malformed certificates, key formats, CRLF and
+first-key behavior.
+
 The application keeps its existing MQTT protocol, Rustls verification and
 transport behavior. An unrelated maintained MQTT fork would require a larger
 protocol/API and supply-chain review. This local patch is temporary: remove
 `[patch.crates-io]` and this directory when an upstream rumqttc release accepts
-rustls-webpki >=0.103.13, update Cargo.lock, and rerun the locked TLS tests,
+rustls-webpki >=0.103.13 and removes rustls-pemfile, update Cargo.lock, and rerun the locked TLS tests,
 Clippy and cargo audit. Do not add advisory ignores or weaken TLS verification.

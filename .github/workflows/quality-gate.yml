@@ -47,7 +47,6 @@ jobs:
     permissions:
       contents: read
       actions: read
-      security-events: write
     needs:
       - scope
       - workflow-contracts
