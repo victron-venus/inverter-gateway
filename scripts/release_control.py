@@ -1122,8 +1122,22 @@ def _release_sections(text: str, level: int):
 
 
 def _release_has_guidance(text: str) -> bool:
-    """Comments and empty fence markers cannot replace readable release guidance."""
-    return any(line.strip() for line, _, guidance in _release_lines(text) if guidance)
+    """Require visible content beyond comments, headings and separator markers."""
+    for line, heading_allowed, guidance in _release_lines(text):
+        if not guidance or not line.strip():
+            continue
+        if heading_allowed:
+            if re.match(r" {0,3}#{1,6}(?:[ \t\r\n]|$)", line):
+                continue
+            markers = line.strip().replace(" ", "").replace("\t", "")
+            if (
+                len(markers) >= 3
+                and markers[0] in "-*_"
+                and not markers.strip(markers[0])
+            ):
+                continue
+        return True
+    return False
 
 
 def _release_has_setext_heading(text: str) -> bool:

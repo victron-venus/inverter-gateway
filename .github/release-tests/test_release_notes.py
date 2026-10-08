@@ -500,11 +500,12 @@ class ReleaseNotesTests(unittest.TestCase):
                 self.assertRaisesRegex(release.ReleaseError, "ATX"),
             ):
                 render(text)
+            crlf = text.replace("\n", "\r\n")
             with (
                 self.subTest(underline=underline, newline="CRLF"),
                 self.assertRaisesRegex(release.ReleaseError, "ATX"),
             ):
-                render(text.replace("\n", "\r\n"))
+                render(crlf)
 
     def test_setext_heading_inside_guidance_is_rejected(self):
         text = NOTES.replace("### Security", "Underlined appendix\n---\n### Security")
@@ -528,3 +529,48 @@ class ReleaseNotesTests(unittest.TestCase):
 
     def test_setext_outside_selected_release_does_not_change_body(self):
         self.assertEqual(render("Changelog\n===\n" + NOTES), render(NOTES))
+
+    def test_separator_or_subheading_alone_is_not_release_guidance(self):
+        for section in ("Upgrade", "Security"):
+            for content in (
+                "\n---\n",
+                "\n* * *\n",
+                "\n___\n",
+                "\n   -\t-\t-\n",
+                "#### Migration\n",
+                "######\n",
+                "<!-- hidden instructions -->\n\n---\n",
+                "#### Migration\n\n***\n",
+            ):
+                original = (
+                    "Review optional site settings before enabling the feature."
+                    if section == "Upgrade"
+                    else "Reject malformed requests before issuing hardware commands."
+                )
+                text = NOTES.replace(original, content)
+                with (
+                    self.subTest(section=section, content=content),
+                    self.assertRaisesRegex(release.ReleaseError, section + " guidance"),
+                ):
+                    render(text)
+
+    def test_guidance_after_separator_and_subheading_is_preserved(self):
+        content = "#### Migration\n\n---\n\n- Restart the worker after upgrading."
+        text = NOTES.replace(
+            "Review optional site settings before enabling the feature.", content
+        )
+        self.assertIn(content, render(text))
+
+    def test_literal_markers_in_code_remain_guidance(self):
+        for content in (
+            "```sh\n---\n```",
+            "    ---",
+            "`---`",
+            "\\- - -",
+            "***Restart***",
+        ):
+            text = NOTES.replace(
+                "Review optional site settings before enabling the feature.", content
+            )
+            with self.subTest(content=content):
+                self.assertIn(content.strip(), render(text))

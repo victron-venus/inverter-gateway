@@ -76,3 +76,7 @@ Release guidance and validation helpers also import reviewed toolkit revision `c
 [Toolkit revision `6f3bac8`](https://github.com/victron-venus/venus-os-ci-toolkit/commit/6f3bac867a101441e029ee7c20c5aa92541eb308) also makes same-level and higher-level ATX headings end release sections, including empty headings, while headings inside code or comments remain inert.
 
 Release structure uses ATX headings (`#`, `##`, `###`), with up to three leading spaces. Setext-style or ambiguous text/comment/underline structures in the selected version are rejected; use ATX headings or a blank line before a thematic `---` separator. Literal fenced/indented examples and comments do not define sections.
+
+Toolkit revision `3533a43322cb351433ca8e90b786f14edcea7725` validates staging inputs before creating output and removes only a newly created target after a failed copy, artifact check or receipt write. Regression tests cover retry and preservation of existing operator files.
+
+Toolkit revision `4895f852f87ca1f27e2bc75e24c5c792e4f95aa6` includes verified staging cleanup and rejects release guidance made only of headings or separators. Regression tests cover retry, preservation of existing operator files, and visible guidance requirements.

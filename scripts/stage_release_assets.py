@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
 import glob
 import hashlib
@@ -83,6 +84,36 @@ def inspect_staged_artifacts(output, files, policy, identity) -> list[dict]:
     return metadata
 
 
+def write_staged_files(root, output, files, policy, identity, plan) -> None:
+    """Copy checked inputs and write the receipt into our new target directory."""
+    for path in files.values():
+        shutil.copy2(path, output / path.name)
+    metadata = inspect_staged_artifacts(output, files, policy, identity)
+    receipt = output / f"release-inputs-{output.name}.json"
+    # Repository-controlled argv; no shell interpolation or external command text.
+    subprocess.run(  # nosec B603
+        [
+            sys.executable,
+            str(root / "scripts/version_receipt.py"),
+            "create",
+            "--plan",
+            str(plan),
+            "--inputs",
+            str(root / ".release-inputs.json"),
+            "--assets",
+            str(output),
+            "--output",
+            str(receipt),
+        ],
+        check=True,
+    )
+    evidence = json.loads(receipt.read_text(encoding="utf-8"))
+    evidence["artifact_metadata"] = metadata
+    receipt.write_text(
+        json.dumps(evidence, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+
+
 def stage(root: Path, target: str, patterns: list[str]) -> Path:
     """Use an empty target directory and refuse ambiguous or non-file payloads."""
     # Keep validation and receipt creation in one ordered, fail-closed operation.
@@ -103,9 +134,6 @@ def stage(root: Path, target: str, patterns: list[str]) -> Path:
         )
     if plan.is_symlink() or not plan.is_file():
         raise ValueError("Release plan must be a regular file")
-    output.mkdir(parents=True)
-    for path in files.values():
-        shutil.copy2(path, output / path.name)
     policy = json.loads((root / ".release-policy.json").read_text(encoding="utf-8"))
     # Developer/CI toolchain selected by the invoking operator via PATH.
     source_sha = subprocess.check_output(  # nosec B603, B607
@@ -119,30 +147,17 @@ def stage(root: Path, target: str, patterns: list[str]) -> Path:
     version_plan.sync_versions(root, policy, identity, check=True)
     inputs = json.loads((root / ".release-inputs.json").read_text(encoding="utf-8"))
     verify_staged_inputs(root, policy, inputs)
-    metadata = inspect_staged_artifacts(output, files, policy, identity)
-    # Repository-controlled argv; no shell interpolation or external command text.
-    subprocess.run(  # nosec B603
-        [
-            sys.executable,
-            str(root / "scripts/version_receipt.py"),
-            "create",
-            "--plan",
-            str(plan),
-            "--inputs",
-            str(root / ".release-inputs.json"),
-            "--assets",
-            str(output),
-            "--output",
-            str(output / f"release-inputs-{target}.json"),
-        ],
-        check=True,
-    )
-    receipt = output / f"release-inputs-{target}.json"
-    evidence = json.loads(receipt.read_text(encoding="utf-8"))
-    evidence["artifact_metadata"] = metadata
-    receipt.write_text(
-        json.dumps(evidence, sort_keys=True, indent=2) + "\n", encoding="utf-8"
-    )
+    parent_existed = output.parent.exists()
+    output.mkdir(parents=True)
+    try:
+        write_staged_files(root, output, files, policy, identity, plan)
+    except BaseException:
+        shutil.rmtree(output)
+        if not parent_existed:
+            # Remove only an empty parent we created; preserve sibling job output.
+            with contextlib.suppress(OSError):
+                output.parent.rmdir()
+        raise
     return output
 
 
