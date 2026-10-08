@@ -114,7 +114,12 @@ async fn mqtt_pem_uses_first_valid_key_and_ignores_trailing_key_sections() {
             .unwrap();
     };
     let client = async {
-        let _ = eventloop.poll().await;
+        let result = eventloop.poll().await;
+        // The smoke server sends no MQTT CONNACK, but TLS must finish cleanly.
+        assert!(
+            !matches!(result, Err(ConnectionError::Tls(_))),
+            "{result:?}"
+        );
     };
     tokio::time::timeout(Duration::from_secs(5), async {
         tokio::join!(server, client);
