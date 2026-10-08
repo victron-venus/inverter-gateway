@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import unittest
 import zipfile
 from contextlib import redirect_stderr, redirect_stdout
@@ -400,6 +401,57 @@ class AdapterTest(unittest.TestCase):  # pylint: disable=too-many-public-methods
                     "field": ["tool", key, "version"],
                 }])
                 self.assertEqual(path.read_text(), before.replace("2.5.42", "2.5.42-beta.2"))
+
+    def test_toml_quoted_assignment_keys_preserve_delimiters_and_escapes(self):
+        cases = (
+            ('"a=b"', "a=b"),
+            ('"a#b"', "a#b"),
+            ("'literal=#key'", "literal=#key"),
+            (r'"escaped\"=quote#key"', 'escaped"=quote#key'),
+            (r'"backslash\\=key#"', 'backslash\\=key#'),
+            (r'"\u0023\u003d"', "#="),
+            ('""', ""),
+            (r"'literal\=#key'", 'literal\\=#key'),
+        )
+        for quoted, key in cases:
+            with self.subTest(quoted=quoted):
+                assignment = f'release.{quoted} = "2.5.42"'
+                before = (
+                    '# release.fake = "2.5.42"\n[tool]\n'
+                    'unrelated = "2.5.42"\n'
+                    + assignment + ' # preserve = and # here\n'
+                )
+                self.assertEqual(tomllib.loads(before)["tool"]["release"][key], "2.5.42")
+                path = self.write("config.toml", before)
+                self.sync([{
+                    "path": "config.toml", "format": "toml",
+                    "field": ["tool", "release", key],
+                }])
+                expected = before.replace(assignment, assignment.replace('"2.5.42"', '"2.5.42-beta.2"'))
+                self.assertEqual(path.read_text(), expected)
+                self.assertEqual(tomllib.loads(expected)["tool"]["release"][key], "2.5.42-beta.2")
+
+    def test_toml_unrelated_quoted_assignment_keys_do_not_block_version_sync(self):
+        before = (
+            '"a=b" = 1\n"a#b" = "2.5.42"\n'
+            "'literal=#key' = 2\n"
+            '# "fake=key" = "2.5.42"\n[project]\n'
+            'version = "2.5.42" # retain comment = text\n'
+        )
+        self.assertEqual(tomllib.loads(before)["a#b"], "2.5.42")
+        path = self.write("config.toml", before)
+        self.sync([{
+            "path": "config.toml", "format": "toml", "field": "project.version",
+        }])
+        self.assertEqual(path.read_text(), before.replace('version = "2.5.42"', 'version = "2.5.42-beta.2"'))
+
+    def test_toml_long_quoted_assignment_key_preserves_layout(self):
+        key = 'escaped"=#\\' * 10000
+        before = json.dumps(key) + ' = 1 # ignored = delimiter\nversion = "2.5.42"\n'
+        self.assertEqual(tomllib.loads(before)[key], 1)
+        path = self.write("config.toml", before)
+        self.sync([{"path": "config.toml", "format": "toml", "field": "version"}])
+        self.assertEqual(path.read_text(), before.replace('version = "2.5.42"', 'version = "2.5.42-beta.2"'))
 
     def test_toml_long_whitespace_and_header_comment_preserve_layout(self):
         padding = " " * 4000
