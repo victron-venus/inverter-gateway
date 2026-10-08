@@ -15,3 +15,13 @@ check does not appear on every PR. It waits for all observed checks, including G
 without making absent conditional checks a permanent merge blocker. BOT_PAT remains
 the merger token; approval token policies are unchanged. The gate and external
 security checks retain strict branch protection and verified source GitHub Apps.
+
+## Selective toolkit maintenance
+
+The existing vendored baseline is retained. The following behavior-preserving
+changes are backported from [toolkit ba1e3e7](https://github.com/victron-venus/venus-os-ci-toolkit/commit/ba1e3e7810783dca5ba6dec85274e2df60bdeef1):
+
+- ASCII-only NIGHTLY identity pattern.
+
+The repository-specific imports, type annotations, policy and workflow inputs
+remain authoritative; this is not a full generator upgrade.
