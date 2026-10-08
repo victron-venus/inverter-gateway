@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-# Vendored release toolkit; change the toolkit source, then render again.
-# ruff: noqa
-# mypy: ignore-errors
-# pylint: skip-file
-# fmt: off
 """Reserve immutable version plans through a repository-scoped GitHub CAS ledger.
 
 The dedicated branch is metadata only. No operation changes the default branch,
@@ -13,7 +8,9 @@ an existing plan, a release tag, or published package bytes.
 from __future__ import annotations
 
 import base64
-import subprocess
+
+# Subprocess calls below use argument vectors with shell=False.
+import subprocess  # nosec B404
 
 import release_control as rc
 import version_plan
@@ -23,6 +20,7 @@ FILE = "release-version-state.json"
 READ_PATH = f"contents/{FILE}?ref={BRANCH}"
 WRITE_PATH = f"contents/{FILE}"
 REF_PATH = f"git/ref/heads/{BRANCH}"
+RUN_ID_LABEL = "run ID"
 
 
 class StateGitHub(rc.GitHub):
@@ -43,7 +41,8 @@ class StateGitHub(rc.GitHub):
                 "Invalid ledger write",
             )
         return self.response(
-            subprocess.run(
+            # Developer/CI toolchain selected by the invoking operator via PATH.
+            subprocess.run(  # nosec B603, B607
                 [
                     "gh",
                     "api",
@@ -138,7 +137,7 @@ def reserve_plan(
     """Allocate once per Actions run and bind retries to the exact same inputs."""
     # A boolean policy floor must not pass as an integer.
     # pylint: disable=unidiomatic-typecheck
-    run_key = str(rc.positive(run_id, "run ID"))
+    run_key = str(rc.positive(run_id, RUN_ID_LABEL))
     state, previous = read_state(gh)
     if run_key in state["plans"]:
         record = state["plans"][run_key]
@@ -188,7 +187,7 @@ def _verify_reservation(
     gh: StateGitHub, state: dict, plan: dict, run_id: int, parent: dict | None
 ) -> None:
     version_plan.validate_plan(plan)
-    record = state["plans"].get(str(rc.positive(run_id, "run ID")))
+    record = state["plans"].get(str(rc.positive(run_id, RUN_ID_LABEL)))
     rc.require(
         record == {"plan": plan, "parent": parent},
         "Version reservation differs from build plan",
@@ -267,7 +266,7 @@ def begin_publication(
     needs a new reservation in a new run; the ledger must never be reset to retry.
     Byte promotion intentionally keeps the already-published RC's number.
     """
-    rc.positive(run_id, "run ID")
+    rc.positive(run_id, RUN_ID_LABEL)
     # Truthy strings are not valid publication flags.
     # pylint: disable-next=unidiomatic-typecheck
     rc.require(type(promotion) is bool, "Invalid publication promotion flag")

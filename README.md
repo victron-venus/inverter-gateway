@@ -315,3 +315,9 @@ MIT — see [LICENSE](LICENSE).
 Browse the [public project catalog](https://victron-venus.github.io/.github/projects.html)
 for other Venus OS packages and companion tools. Each project documents its own
 installation, compatibility and release requirements.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for reports, development checks and pull requests,
+[SECURITY.md](SECURITY.md) for private vulnerability reporting and deployment trust boundaries,
+and the [OpenSSF evidence index](docs/openssf-evidence.md) for assessment references and remaining verification.

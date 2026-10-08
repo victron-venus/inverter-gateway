@@ -25,7 +25,9 @@ import os
 import plistlib
 import re
 import stat
-import subprocess
+
+# Subprocess calls below use argument vectors with shell=False.
+import subprocess  # nosec B404
 import sys
 import tarfile
 import tempfile
@@ -162,37 +164,46 @@ def _declaration(item, artifact=False):  # pylint: disable=too-many-branches
             and not any(c in item["package"] for c in "\r\n\0"),
             "Invalid owned package selector",
         )
-    kind = item["format"]
     if artifact:
-        if kind == "oci":
-            require(
-                "field" in item and "package" not in item,
-                "OCI artifact requires an exact config field and no package selector",
-            )
-        if kind in {"tar-text", "tar-toml", "tar-json", "zip-json"}:
-            require(
-                "member" in item, "Archive field verification requires an exact member"
-            )
-            _relative(item["member"])
-        else:
-            require("member" not in item, f"{kind} does not accept member")
-        if kind == "tar-text":
-            require(
-                "field" not in item and "package" not in item,
-                "Text artifact has no field or package selector",
-            )
-    if not artifact:
-        if kind in {"json", "toml", "python", "plist", "pbxproj"}:
-            require("field" in item, f"{kind} requires an explicit field")
-        if kind in {"cargo-lock", "uv-lock", "npm-lock", "pbxproj"}:
-            require(
-                "package" in item, f"{kind} requires an explicit owned package selector"
-            )
-        if kind in {"text", "cargo-lock", "uv-lock", "npm-lock"}:
-            require("field" not in item, f"{kind} does not accept field")
-        if kind in {"text", "python", "plist"}:
-            require("package" not in item, f"{kind} does not accept package")
+        _artifact_declaration(item)
+    else:
+        _input_declaration(item)
     return item
+
+
+def _artifact_declaration(item):
+    """Require selectors appropriate for the built artifact format."""
+    kind = item["format"]
+    if kind == "oci":
+        require(
+            "field" in item and "package" not in item,
+            "OCI artifact requires an exact config field and no package selector",
+        )
+    if kind in {"tar-text", "tar-toml", "tar-json", "zip-json"}:
+        require("member" in item, "Archive field verification requires an exact member")
+        _relative(item["member"])
+    else:
+        require("member" not in item, f"{kind} does not accept member")
+    if kind == "tar-text":
+        require(
+            "field" not in item and "package" not in item,
+            "Text artifact has no field or package selector",
+        )
+
+
+def _input_declaration(item):
+    """Require an explicit selector for each owned source format."""
+    kind = item["format"]
+    if kind in {"json", "toml", "python", "plist", "pbxproj"}:
+        require("field" in item, f"{kind} requires an explicit field")
+    if kind in {"cargo-lock", "uv-lock", "npm-lock", "pbxproj"}:
+        require(
+            "package" in item, f"{kind} requires an explicit owned package selector"
+        )
+    if kind in {"text", "cargo-lock", "uv-lock", "npm-lock"}:
+        require("field" not in item, f"{kind} does not accept field")
+    if kind in {"text", "python", "plist"}:
+        require("package" not in item, f"{kind} does not accept package")
 
 
 def validate_policy(policy):
@@ -492,65 +503,80 @@ def _get(data, path):
     return current
 
 
-def _json_document(raw):
-    """Parse JSON while retaining scalar token locations for minimal edits."""
-    text = raw.decode("utf-8")
-    spans = {}
-    decoder = json.JSONDecoder()
+class _JsonDocument:
+    """JSON parser retaining exact scalar offsets and rejecting duplicate keys."""
 
-    def whitespace(index):
-        while index < len(text) and text[index] in " \n\r\t":
+    def __init__(self, raw):
+        self.text = raw.decode("utf-8")
+        self.spans = {}
+        self.decoder = json.JSONDecoder()
+
+    def whitespace(self, index):
+        while index < len(self.text) and self.text[index] in " \n\r\t":
             index += 1
         return index
 
-    def parse(index, path):
-        index = whitespace(index)
-        start = index
-        require(index < len(text), "Truncated JSON input")
-        if text[index] == "{":
-            result = {}
-            index = whitespace(index + 1)
-            if index < len(text) and text[index] == "}":
+    def object(self, index, path):
+        result = {}
+        index = self.whitespace(index + 1)
+        if index < len(self.text) and self.text[index] == "}":
+            return result, index + 1
+        while True:
+            key, end = self.decoder.raw_decode(self.text, index)
+            require(
+                isinstance(key, str) and key not in result,
+                "Duplicate or invalid JSON key",
+            )
+            index = self.whitespace(end)
+            require(
+                index < len(self.text) and self.text[index] == ":",
+                "Malformed JSON object",
+            )
+            value, index = self.parse(index + 1, path + (key,))
+            result[key] = value
+            index = self.whitespace(index)
+            require(index < len(self.text), "Truncated JSON object")
+            if self.text[index] == "}":
                 return result, index + 1
-            while True:
-                key, end = decoder.raw_decode(text, index)
-                require(
-                    isinstance(key, str) and key not in result,
-                    "Duplicate or invalid JSON key",
-                )
-                index = whitespace(end)
-                require(
-                    index < len(text) and text[index] == ":", "Malformed JSON object"
-                )
-                value, index = parse(index + 1, path + (key,))
-                result[key] = value
-                index = whitespace(index)
-                require(index < len(text), "Truncated JSON object")
-                if text[index] == "}":
-                    return result, index + 1
-                require(text[index] == ",", "Malformed JSON object delimiter")
-                index = whitespace(index + 1)
-        if text[index] == "[":
-            result = []
-            index = whitespace(index + 1)
-            if index < len(text) and text[index] == "]":
+            require(self.text[index] == ",", "Malformed JSON object delimiter")
+            index = self.whitespace(index + 1)
+
+    def array(self, index, path):
+        result = []
+        index = self.whitespace(index + 1)
+        if index < len(self.text) and self.text[index] == "]":
+            return result, index + 1
+        while True:
+            value, index = self.parse(index, path + (len(result),))
+            result.append(value)
+            index = self.whitespace(index)
+            require(index < len(self.text), "Truncated JSON array")
+            if self.text[index] == "]":
                 return result, index + 1
-            while True:
-                value, index = parse(index, path + (len(result),))
-                result.append(value)
-                index = whitespace(index)
-                require(index < len(text), "Truncated JSON array")
-                if text[index] == "]":
-                    return result, index + 1
-                require(text[index] == ",", "Malformed JSON array delimiter")
-                index = whitespace(index + 1)
-        value, end = decoder.raw_decode(text, index)
-        spans[path] = (start, end)
+            require(self.text[index] == ",", "Malformed JSON array delimiter")
+            index = self.whitespace(index + 1)
+
+    def parse(self, index, path):
+        index = self.whitespace(index)
+        require(index < len(self.text), "Truncated JSON input")
+        if self.text[index] == "{":
+            return self.object(index, path)
+        if self.text[index] == "[":
+            return self.array(index, path)
+        value, end = self.decoder.raw_decode(self.text, index)
+        self.spans[path] = (index, end)
         return value, end
 
-    data, end = parse(0, ())
-    require(whitespace(end) == len(text), "Unexpected content after JSON document")
-    return text, data, spans
+
+def _json_document(raw):
+    """Parse JSON while retaining scalar token locations for minimal edits."""
+    document = _JsonDocument(raw)
+    data, end = document.parse(0, ())
+    require(
+        document.whitespace(end) == len(document.text),
+        "Unexpected content after JSON document",
+    )
+    return document.text, data, document.spans
 
 
 def _scalar(value, old):
@@ -618,18 +644,20 @@ def _toml_key(key):
         raise VersionError(f"Unsupported TOML key: {key}") from error
 
 
+def _toml_quote_step(line, index, quote):
+    if quote.startswith('"') and line[index] == "\\":
+        return index + 2, quote
+    if line.startswith(quote, index):
+        return index + len(quote), None
+    return index + 1, quote
+
+
 def _toml_lexical_state(line, quote, depth):
     """Track continued TOML arrays, inline tables and multiline strings."""
     index = 0
     while index < len(line):
         if quote:
-            if quote.startswith('"') and line[index] == "\\":
-                index += 2
-            elif line.startswith(quote, index):
-                index += len(quote)
-                quote = None
-            else:
-                index += 1
+            index, quote = _toml_quote_step(line, index, quote)
         elif line[index] == "#":
             break
         elif line.startswith('"""', index) or line.startswith("'''", index):
@@ -647,9 +675,19 @@ def _toml_lexical_state(line, quote, depth):
     return quote, depth
 
 
-def _toml_edit(raw, declaration, value):  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
-    text = raw.decode("utf-8")
-    data = tomllib.loads(text)
+def _local_lock_package(entry, kind):
+    if kind == "cargo-lock":
+        return "source" not in entry
+    source = entry.get("source", {})
+    return (
+        isinstance(source, dict)
+        and len(source) == 1
+        and next(iter(source), "") in {"editable", "virtual", "directory"}
+    )
+
+
+def _toml_target(data, declaration):
+    """Select exactly one owned package or explicit manifest field."""
     kind = declaration["format"]
     if kind in {"cargo-lock", "uv-lock"}:
         entries = data.get("package", [])
@@ -658,16 +696,7 @@ def _toml_edit(raw, declaration, value):  # pylint: disable=too-many-locals,too-
         for index, entry in enumerate(entries):
             if entry.get("name") != declaration["package"]:
                 continue
-            if kind == "cargo-lock":
-                local = "source" not in entry
-            else:
-                source = entry.get("source", {})
-                local = (
-                    isinstance(source, dict)
-                    and len(source) == 1
-                    and next(iter(source), "") in {"editable", "virtual", "directory"}
-                )
-            if local:
+            if _local_lock_package(entry, kind):
                 matches.append(index)
         require(
             len(matches) == 1,
@@ -681,12 +710,90 @@ def _toml_edit(raw, declaration, value):  # pylint: disable=too-many-locals,too-
                 _get(data, target[:-1] + ("name",)) == declaration["package"],
                 "TOML manifest package identity mismatch",
             )
-    old = _get(data, target)
-    replacement = _scalar(value, old)
-    require(
-        isinstance(replacement, str) or type(replacement) is int,
-        "Unsupported TOML value",
+    return target
+
+
+def _toml_token(replacement, original):
+    if not isinstance(replacement, str):
+        return str(replacement)
+    if original.startswith("'") and "'" not in replacement:
+        return "'" + replacement + "'"
+    return json.dumps(replacement)
+
+
+def _toml_assignment_separator(line):
+    """Find the unquoted equals sign before any TOML comment."""
+    index, quote = 0, None
+    while index < len(line):
+        if quote:
+            index, quote = _toml_quote_step(line, index, quote)
+            continue
+        character = line[index]
+        if character in "\"'":
+            quote = character
+        elif character in "#\r\n":
+            return None
+        elif character == "=":
+            return index
+        index += 1
+    return None
+
+
+def _toml_assignment(line, current, target, replacement):
+    """Locate a single-line assignment only in the selected TOML table."""
+    separator = _toml_assignment_separator(line)
+    if separator is None or not line[:separator].strip():
+        return None
+    key = _toml_key(line[:separator].strip())
+    if current + key != target:
+        return None
+    start = separator + 1
+    while start < len(line) and line[start].isspace():
+        start += 1
+    scalar = re.match(
+        r'"(?:[^"\\\r\n]|\\.)*"|\x27[^\x27\r\n]*\x27|[+-]?\d[\d_]*',
+        line[start:],
     )
+    require(scalar is not None, "Owned TOML value must be a single-line scalar")
+    end = start + scalar.end()
+    suffix = line[end:].lstrip()
+    require(
+        not suffix or suffix.startswith("#"),
+        "Unsupported TOML expression after version value",
+    )
+    return start, end, _toml_token(replacement, scalar.group())
+
+
+def _toml_header_end(line, opening, index):
+    closing = 2 if line.startswith("]]", index) else 1
+    suffix = line[index + closing :].strip()
+    if suffix and not suffix.startswith("#"):
+        return None
+    require(opening == closing, "Malformed TOML table header")
+    return "[" * opening, line[opening:index]
+
+
+def _toml_header(line):
+    """Locate a table's closing brackets without backtracking through key text."""
+    line = line.lstrip()
+    if not line.startswith("["):
+        return None
+    opening = 2 if line.startswith("[[") else 1
+    index, quote = opening, None
+    while index < len(line):
+        if quote:
+            index, quote = _toml_quote_step(line, index, quote)
+            continue
+        if line[index] in "\"'":
+            quote = line[index]
+        elif line[index] == "]":
+            return _toml_header_end(line, opening, index)
+        index += 1
+    return None
+
+
+def _toml_assignments(text, target, replacement):
+    """Track tables and continuations without treating string contents as keys."""
     current = ()
     arrays = {}
     offset = 0
@@ -698,43 +805,33 @@ def _toml_edit(raw, declaration, value):  # pylint: disable=too-many-locals,too-
         if continuation:
             offset += len(line)
             continue
-        header = re.fullmatch(r"\s*(\[\[?)(.+?)(\]\]?)\s*(?:#.*)?(?:\r?\n)?", line)
+        header = _toml_header(line)
         if header:
-            opening, key, closing = header.groups()
-            require(len(opening) == len(closing), "Malformed TOML table header")
+            opening, key = header
             current = _toml_key(key)
             if opening == "[[":
                 arrays[current] = arrays.get(current, -1) + 1
                 current += (arrays[current],)
         else:
-            assignment = re.match(r"\s*([^#=\n]+?)\s*=\s*", line)
-            if assignment:
-                key = _toml_key(assignment.group(1))
-                if current + key == target:
-                    start = assignment.end()
-                    scalar = re.match(
-                        r'"(?:[^"\\\r\n]|\\.)*"|\x27[^\x27\r\n]*\x27|[+-]?\d[\d_]*',
-                        line[start:],
-                    )
-                    require(
-                        scalar is not None,
-                        "Owned TOML value must be a single-line scalar",
-                    )
-                    end = start + scalar.end()
-                    require(
-                        re.fullmatch(r"\s*(?:#.*)?(?:\r?\n)?", line[end:]),
-                        "Unsupported TOML expression after version value",
-                    )
-                    if isinstance(replacement, str):
-                        token = (
-                            "'" + replacement + "'"
-                            if scalar.group().startswith("'") and "'" not in replacement
-                            else json.dumps(replacement)
-                        )
-                    else:
-                        token = str(replacement)
-                    found.append((offset + start, offset + end, token))
+            assignment = _toml_assignment(line, current, target, replacement)
+            if assignment is not None:
+                start, end, token = assignment
+                found.append((offset + start, offset + end, token))
         offset += len(line)
+    return found
+
+
+def _toml_edit(raw, declaration, value):  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+    text = raw.decode("utf-8")
+    data = tomllib.loads(text)
+    target = _toml_target(data, declaration)
+    old = _get(data, target)
+    replacement = _scalar(value, old)
+    require(
+        isinstance(replacement, str) or type(replacement) is int,
+        "Unsupported TOML value",
+    )
+    found = _toml_assignments(text, target, replacement)
     require(
         len(found) == 1,
         "TOML selector must identify exactly one explicit scalar assignment",
@@ -758,13 +855,12 @@ def _python_edit(raw, declaration, value):
     tree = ast.parse(text)
     matches = []
     for node in tree.body:
-        targets = (
-            node.targets
-            if isinstance(node, ast.Assign)
-            else [node.target]
-            if isinstance(node, ast.AnnAssign)
-            else []
-        )
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            targets = []
         if any(
             isinstance(target, ast.Name) and target.id == name for target in targets
         ):
@@ -959,7 +1055,13 @@ def sync_versions(root, policy, plan, check=False):  # pylint: disable=too-many-
         require(
             not drift, "Version inputs do not match release plan: " + ", ".join(drift)
         )
-        return evidence
+    else:
+        _apply_version_edits(root, originals, edited, paths, drift)
+    return evidence
+
+
+def _apply_version_edits(root, originals, edited, paths, drift):
+    """Recheck, stage, and replace only the prepared version changes."""
     # Recheck confinement and file content before committing any prepared edit.
     for name, original in originals.items():
         require(
@@ -987,7 +1089,6 @@ def sync_versions(root, policy, plan, check=False):  # pylint: disable=too-many-
     finally:
         for path in staged.values():
             path.unlink(missing_ok=True)
-    return evidence
 
 
 def read_base_version(root, policy):
@@ -1048,7 +1149,8 @@ def verify_checkout(root, policy, plan):
     root = Path(root).resolve(strict=True)
     if not (root / ".git").exists():
         return
-    head = subprocess.check_output(
+    # Developer/CI toolchain selected by the invoking operator via PATH.
+    head = subprocess.check_output(  # nosec B603, B607
         ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
     ).strip()
     require(
@@ -1066,7 +1168,8 @@ def verify_checkout(root, policy, plan):
     }
     for name, declarations in grouped.items():
         _relative(name)
-        original = subprocess.check_output(
+        # Developer/CI toolchain selected by the invoking operator via PATH.
+        original = subprocess.check_output(  # nosec B603, B607
             [
                 "git",
                 "-C",
@@ -1167,262 +1270,281 @@ def _archive_name(name):
         return None
 
 
-def _oci_metadata(path, field, expected):  # pylint: disable=too-many-locals,too-many-statements
-    """Validate the OCI index/manifest/config digest chain and all runnable images.
+class _OciMetadata:
+    """Bounded OCI graph verification with explicit per-archive state."""
 
-    Only bounded JSON metadata is read. Layer bodies remain covered by the outer
-    archive receipt; their recorded existence and size are checked here.
-    """
-    index_types = {
-        "application/vnd.oci.image.index.v1+json",
-        "application/vnd.docker.distribution.manifest.list.v2+json",
-    }
-    manifest_types = {
-        "application/vnd.oci.image.manifest.v1+json",
-        "application/vnd.docker.distribution.manifest.v2+json",
-    }
-    oci_manifest_type = "application/vnd.oci.image.manifest.v1+json"
-    config_types = {
-        "application/vnd.oci.image.config.v1+json",
-        "application/vnd.docker.container.image.v1+json",
-    }
-    attestation_type = "application/vnd.docker.attestation.manifest.v1+json"
-    empty_config_type = "application/vnd.oci.empty.v1+json"
-    empty_config_digest = "sha256:" + digest(b"{}")
-    images, verified = [], set()
-    runnable_manifests, attestation_subjects, legacy_references = {}, [], []
-    visited, metadata_bytes = 0, 0
-    with tarfile.open(path, mode="r:*") as archive:
-        members = {}
-        for count, entry in enumerate(archive):
+    def __init__(self, archive, field, expected):
+        self.archive = archive
+        self.field = field
+        self.expected = expected
+        self.index_types = {
+            "application/vnd.oci.image.index.v1+json",
+            "application/vnd.docker.distribution.manifest.list.v2+json",
+        }
+        self.manifest_types = {
+            "application/vnd.oci.image.manifest.v1+json",
+            "application/vnd.docker.distribution.manifest.v2+json",
+        }
+        self.oci_manifest_type = "application/vnd.oci.image.manifest.v1+json"
+        self.config_types = {
+            "application/vnd.oci.image.config.v1+json",
+            "application/vnd.docker.container.image.v1+json",
+        }
+        self.attestation_type = "application/vnd.docker.attestation.manifest.v1+json"
+        self.empty_config_type = "application/vnd.oci.empty.v1+json"
+        self.empty_config_digest = "sha256:" + digest(b"{}")
+        self.images, self.verified = [], set()
+        self.runnable_manifests, self.attestation_subjects, self.legacy_references = (
+            {},
+            [],
+            [],
+        )
+        self.visited, self.metadata_bytes = 0, 0
+        self.members = {}
+        for count, entry in enumerate(self.archive):
             require(count < 100_000, "OCI archive has too many members")
             name = _archive_name(entry.name)
             if entry.isdir():
                 continue
             require(
-                name is not None and name not in members,
+                name is not None and name not in self.members,
                 "Unsafe or duplicate OCI archive member",
             )
-            members[name] = entry
+            self.members[name] = entry
 
-        def read(name):
-            nonlocal metadata_bytes
-            entry = members.get(name)
-            require(
-                entry is not None and entry.isfile() and 0 < entry.size <= MAX_METADATA,
-                f"Missing or oversized OCI metadata: {name}",
-            )
-            with archive.extractfile(entry) as handle:
-                raw = handle.read(MAX_METADATA + 1)
-            require(len(raw) == entry.size, "Truncated OCI metadata")
-            metadata_bytes += len(raw)
-            require(
-                metadata_bytes <= 32_000_000, "OCI metadata exceeds aggregate limit"
-            )
-            return raw
+    def read(self, name):
+        entry = self.members.get(name)
+        require(
+            entry is not None and entry.isfile() and 0 < entry.size <= MAX_METADATA,
+            f"Missing or oversized OCI metadata: {name}",
+        )
+        with self.archive.extractfile(entry) as handle:
+            raw = handle.read(MAX_METADATA + 1)
+        require(len(raw) == entry.size, "Truncated OCI metadata")
+        self.metadata_bytes += len(raw)
+        require(
+            self.metadata_bytes <= 32_000_000, "OCI metadata exceeds aggregate limit"
+        )
+        return raw
 
-        def blob(descriptor, metadata=True):
-            require(isinstance(descriptor, dict), "OCI descriptor must be an object")
-            identity = descriptor.get("digest", "")
-            require(
-                isinstance(identity, str)
-                and re.fullmatch(r"sha256:[0-9a-f]{64}", identity),
-                "OCI descriptor requires a sha256 digest",
-            )
-            size = descriptor.get("size")
-            require(type(size) is int and size >= 0, "Invalid OCI descriptor size")
-            name = "blobs/sha256/" + identity[7:]
-            entry = members.get(name)
-            require(
-                entry is not None and entry.isfile() and entry.size == size,
-                "OCI descriptor blob is missing or has a different size",
-            )
-            if not metadata:
-                return None
-            raw = read(name)
-            require(digest(raw) == identity[7:], "OCI metadata digest mismatch")
-            verified.add(identity)
-            data = _json_document(raw)[1]
-            require(isinstance(data, dict), "OCI metadata must be an object")
-            return data
+    def blob(self, descriptor, metadata=True):
+        require(isinstance(descriptor, dict), "OCI descriptor must be an object")
+        identity = descriptor.get("digest", "")
+        require(
+            isinstance(identity, str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", identity),
+            "OCI descriptor requires a sha256 digest",
+        )
+        size = descriptor.get("size")
+        require(type(size) is int and size >= 0, "Invalid OCI descriptor size")
+        name = "blobs/sha256/" + identity[7:]
+        entry = self.members.get(name)
+        require(
+            entry is not None and entry.isfile() and entry.size == size,
+            "OCI descriptor blob is missing or has a different size",
+        )
+        if not metadata:
+            return None
+        raw = self.read(name)
+        require(digest(raw) == identity[7:], "OCI metadata digest mismatch")
+        self.verified.add(identity)
+        data = _json_document(raw)[1]
+        require(isinstance(data, dict), "OCI metadata must be an object")
+        return data
 
-        def descriptor_key(descriptor):
-            return (
-                descriptor.get("mediaType"),
-                descriptor.get("digest"),
-                descriptor.get("size"),
-            )
+    def descriptor_key(self, descriptor):
+        return (
+            descriptor.get("mediaType"),
+            descriptor.get("digest"),
+            descriptor.get("size"),
+        )
 
-        def walk(descriptor, depth=0):  # pylint: disable=too-many-branches,too-many-locals,too-many-statements
-            nonlocal visited
-            visited += 1
-            require(depth <= 8 and visited <= 1024, "OCI metadata graph exceeds limits")
-            data = blob(descriptor)
-            media = descriptor.get("mediaType")
+    def walk(self, descriptor, depth=0):
+        self.visited += 1
+        require(
+            depth <= 8 and self.visited <= 1024, "OCI metadata graph exceeds limits"
+        )
+        data = self.blob(descriptor)
+        media = descriptor.get("mediaType")
+        require(
+            data.get("schemaVersion") == 2 and data.get("mediaType", media) == media,
+            "OCI manifest schema or media type mismatch",
+        )
+        platform = descriptor.get("platform") or {}
+        require(isinstance(platform, dict), "Invalid OCI platform descriptor")
+        annotations = descriptor.get("annotations") or {}
+        require(isinstance(annotations, dict), "Invalid OCI annotations")
+        reference_type = annotations.get("vnd.docker.reference.type")
+        artifact_type = data.get("artifactType")
+        if (
+            reference_type == "attestation-manifest"
+            or artifact_type == self.attestation_type
+        ):
+            self.attestation(descriptor, data, platform, annotations)
+            return
+        if media in self.index_types:
+            manifests = data.get("manifests")
             require(
-                data.get("schemaVersion") == 2
-                and data.get("mediaType", media) == media,
-                "OCI manifest schema or media type mismatch",
+                isinstance(manifests, list) and 0 < len(manifests) <= 1024,
+                "OCI index requires a bounded manifest list",
             )
-            platform = descriptor.get("platform") or {}
-            require(isinstance(platform, dict), "Invalid OCI platform descriptor")
-            annotations = descriptor.get("annotations") or {}
-            require(isinstance(annotations, dict), "Invalid OCI annotations")
-            reference_type = annotations.get("vnd.docker.reference.type")
-            artifact_type = data.get("artifactType")
-            if (
-                reference_type == "attestation-manifest"
-                or artifact_type == attestation_type
-            ):
-                require(
-                    media in manifest_types
-                    and platform.get("os") == "unknown"
-                    and platform.get("architecture") == "unknown"
-                    and reference_type in {None, "attestation-manifest"},
-                    "Ambiguous OCI attestation descriptor",
-                )
-                attest_config = data.get("config")
-                reference_digest = annotations.get("vnd.docker.reference.digest")
-                if reference_digest is not None:
-                    require(
-                        isinstance(reference_digest, str)
-                        and re.fullmatch(r"sha256:[0-9a-f]{64}", reference_digest),
-                        "Invalid OCI attestation reference digest",
-                    )
-                if artifact_type is not None:
-                    require(
-                        artifact_type == attestation_type
-                        and media == oci_manifest_type
-                        and descriptor.get("artifactType") in {None, attestation_type},
-                        "Invalid OCI attestation artifact type",
-                    )
-                    require(
-                        isinstance(attest_config, dict)
-                        and attest_config.get("mediaType") == empty_config_type
-                        and attest_config.get("digest") == empty_config_digest
-                        and attest_config.get("size") == 2
-                        and (
-                            "data" not in attest_config
-                            or attest_config.get("data") == "e30="
-                        ),
-                        "Invalid OCI attestation config",
-                    )
-                    require(
-                        blob(attest_config) == {},
-                        "Invalid OCI attestation config contents",
-                    )
-                    subject = data.get("subject")
-                    require(
-                        isinstance(subject, dict)
-                        and subject.get("mediaType") == oci_manifest_type
-                        and "artifactType" not in subject,
-                        "Invalid OCI attestation subject",
-                    )
-                    blob(subject, metadata=False)
-                    subject_platform = subject.get("platform")
-                    require(
-                        subject_platform is None or isinstance(subject_platform, dict),
-                        "Invalid OCI attestation subject platform",
-                    )
-                    require(
-                        reference_digest is None
-                        or reference_digest == subject.get("digest"),
-                        "OCI attestation reference differs from subject",
-                    )
-                    attestation_subjects.append(
-                        (descriptor_key(subject), subject_platform)
-                    )
-                else:
-                    require(
-                        descriptor.get("artifactType") is None
-                        and isinstance(attest_config, dict)
-                        and attest_config.get("mediaType") in config_types,
-                        "Invalid OCI attestation config",
-                    )
-                    attest_details = blob(attest_config)
-                    require(
-                        attest_details.get("os") == "unknown"
-                        and attest_details.get("architecture") == "unknown",
-                        "OCI attestation contains a runnable image",
-                    )
-                    if reference_digest is not None:
-                        legacy_references.append(reference_digest)
-                attest_layers = data.get("layers")
-                require(
-                    isinstance(attest_layers, list) and 0 < len(attest_layers) <= 4096,
-                    "Invalid OCI attestation layers",
-                )
-                for layer in attest_layers:
-                    require(
-                        isinstance(layer, dict)
-                        and layer.get("mediaType") == "application/vnd.in-toto+json",
-                        "Unsupported OCI attestation layer",
-                    )
-                    blob(layer, metadata=False)
-                return
-            if media in index_types:
-                manifests = data.get("manifests")
-                require(
-                    isinstance(manifests, list) and 0 < len(manifests) <= 1024,
-                    "OCI index requires a bounded manifest list",
-                )
-                for child in manifests:
-                    walk(child, depth + 1)
-                return
-            require(media in manifest_types, "Unsupported OCI descriptor media type")
-            config = data.get("config")
+            for child in manifests:
+                self.walk(child, depth + 1)
+            return
+        self.runnable(descriptor, data, platform)
+
+    def attestation(self, descriptor, data, platform, annotations):
+        media = descriptor.get("mediaType")
+        reference_type = annotations.get("vnd.docker.reference.type")
+        artifact_type = data.get("artifactType")
+        require(
+            media in self.manifest_types
+            and platform.get("os") == "unknown"
+            and platform.get("architecture") == "unknown"
+            and reference_type in {None, "attestation-manifest"},
+            "Ambiguous OCI attestation descriptor",
+        )
+        attest_config = data.get("config")
+        reference_digest = annotations.get("vnd.docker.reference.digest")
+        if reference_digest is not None:
             require(
-                isinstance(config, dict) and config.get("mediaType") in config_types,
-                "OCI image requires a supported config descriptor",
+                isinstance(reference_digest, str)
+                and re.fullmatch(r"sha256:[0-9a-f]{64}", reference_digest),
+                "Invalid OCI attestation reference digest",
             )
-            details = blob(config)
-            for key in ("os", "architecture"):
-                require(
-                    isinstance(details.get(key), str)
-                    and details[key] not in {"", "unknown"},
-                    "OCI runnable image has no platform identity",
-                )
-                require(
-                    key not in platform or platform[key] == details[key],
-                    "OCI platform descriptor differs from config",
-                )
-            actual = _get(details, field)
+        if artifact_type is not None:
+            self.artifact_attestation(descriptor, data, attest_config, reference_digest)
+        else:
+            self.legacy_attestation(descriptor, attest_config, reference_digest)
+        attest_layers = data.get("layers")
+        require(
+            isinstance(attest_layers, list) and 0 < len(attest_layers) <= 4096,
+            "Invalid OCI attestation layers",
+        )
+        for layer in attest_layers:
             require(
-                str(actual) == expected,
-                f"OCI image version mismatch: expected {expected}, got {actual}",
+                isinstance(layer, dict)
+                and layer.get("mediaType") == "application/vnd.in-toto+json",
+                "Unsupported OCI attestation layer",
             )
-            layers = data.get("layers")
+            self.blob(layer, metadata=False)
+
+    def artifact_attestation(self, descriptor, data, attest_config, reference_digest):
+        media = descriptor.get("mediaType")
+        artifact_type = data.get("artifactType")
+        require(
+            artifact_type == self.attestation_type
+            and media == self.oci_manifest_type
+            and descriptor.get("artifactType") in {None, self.attestation_type},
+            "Invalid OCI attestation artifact type",
+        )
+        require(
+            isinstance(attest_config, dict)
+            and attest_config.get("mediaType") == self.empty_config_type
+            and attest_config.get("digest") == self.empty_config_digest
+            and attest_config.get("size") == 2
+            and ("data" not in attest_config or attest_config.get("data") == "e30="),
+            "Invalid OCI attestation config",
+        )
+        require(
+            self.blob(attest_config) == {},
+            "Invalid OCI attestation config contents",
+        )
+        subject = data.get("subject")
+        require(
+            isinstance(subject, dict)
+            and subject.get("mediaType") == self.oci_manifest_type
+            and "artifactType" not in subject,
+            "Invalid OCI attestation subject",
+        )
+        self.blob(subject, metadata=False)
+        subject_platform = subject.get("platform")
+        require(
+            subject_platform is None or isinstance(subject_platform, dict),
+            "Invalid OCI attestation subject platform",
+        )
+        require(
+            reference_digest is None or reference_digest == subject.get("digest"),
+            "OCI attestation reference differs from subject",
+        )
+        self.attestation_subjects.append(
+            (self.descriptor_key(subject), subject_platform)
+        )
+
+    def legacy_attestation(self, descriptor, attest_config, reference_digest):
+        require(
+            descriptor.get("artifactType") is None
+            and isinstance(attest_config, dict)
+            and attest_config.get("mediaType") in self.config_types,
+            "Invalid OCI attestation config",
+        )
+        attest_details = self.blob(attest_config)
+        require(
+            attest_details.get("os") == "unknown"
+            and attest_details.get("architecture") == "unknown",
+            "OCI attestation contains a runnable image",
+        )
+        if reference_digest is not None:
+            self.legacy_references.append(reference_digest)
+
+    def runnable(self, descriptor, data, platform):
+        media = descriptor.get("mediaType")
+        require(media in self.manifest_types, "Unsupported OCI descriptor media type")
+        config = data.get("config")
+        require(
+            isinstance(config, dict) and config.get("mediaType") in self.config_types,
+            "OCI image requires a supported config descriptor",
+        )
+        details = self.blob(config)
+        for key in ("os", "architecture"):
             require(
-                isinstance(layers, list) and len(layers) <= 4096,
-                "Invalid OCI layer inventory",
+                isinstance(details.get(key), str)
+                and details[key] not in {"", "unknown"},
+                "OCI runnable image has no platform identity",
             )
-            for layer in layers:
-                blob(layer, metadata=False)
-            runnable_manifests[descriptor_key(descriptor)] = {
+            require(
+                key not in platform or platform[key] == details[key],
+                "OCI platform descriptor differs from config",
+            )
+        actual = _get(details, self.field)
+        require(
+            str(actual) == self.expected,
+            f"OCI image version mismatch: expected {self.expected}, got {actual}",
+        )
+        layers = data.get("layers")
+        require(
+            isinstance(layers, list) and len(layers) <= 4096,
+            "Invalid OCI layer inventory",
+        )
+        for layer in layers:
+            self.blob(layer, metadata=False)
+        self.runnable_manifests[self.descriptor_key(descriptor)] = {
+            "os": details["os"],
+            "architecture": details["architecture"],
+        }
+        self.images.append(
+            {
+                "config_sha256": config["digest"][7:],
                 "os": details["os"],
                 "architecture": details["architecture"],
+                "version": str(actual),
             }
-            images.append(
-                {
-                    "config_sha256": config["digest"][7:],
-                    "os": details["os"],
-                    "architecture": details["architecture"],
-                    "version": str(actual),
-                }
-            )
+        )
 
-        layout = _json_document(read("oci-layout"))[1]
+    def verify(self):
+
+        layout = _json_document(self.read("oci-layout"))[1]
         require(
             isinstance(layout, dict) and layout.get("imageLayoutVersion") == "1.0.0",
             "Unsupported OCI image layout",
         )
-        root_raw = read("index.json")
+        root_raw = self.read("index.json")
         index = _json_document(root_raw)[1]
         require(
             isinstance(index, dict)
             and index.get("schemaVersion") == 2
             and index.get("mediaType", "application/vnd.oci.image.index.v1+json")
-            in index_types,
+            in self.index_types,
             "Invalid OCI root index",
         )
         manifests = index.get("manifests")
@@ -1431,9 +1553,9 @@ def _oci_metadata(path, field, expected):  # pylint: disable=too-many-locals,too
             "OCI root index requires a bounded manifest list",
         )
         for descriptor in manifests:
-            walk(descriptor)
-        for subject, subject_platform in attestation_subjects:
-            target = runnable_manifests.get(subject)
+            self.walk(descriptor)
+        for subject, subject_platform in self.attestation_subjects:
+            target = self.runnable_manifests.get(subject)
             require(
                 target is not None, "OCI attestation subject is not a runnable image"
             )
@@ -1444,16 +1566,132 @@ def _oci_metadata(path, field, expected):  # pylint: disable=too-many-locals,too
                         or subject_platform[key] == target[key],
                         "OCI attestation subject platform differs from image",
                     )
-        runnable_digests = {item[1] for item in runnable_manifests}
-        for reference_digest in legacy_references:
+        runnable_digests = {item[1] for item in self.runnable_manifests}
+        for reference_digest in self.legacy_references:
             require(
                 reference_digest in runnable_digests,
                 "OCI attestation reference is not a runnable image",
             )
-        require(bool(images), "OCI archive has no runnable images")
-    return json_bytes(
-        {"index_sha256": digest(root_raw), "metadata": sorted(verified)}
-    ), images
+        require(bool(self.images), "OCI archive has no runnable images")
+        return json_bytes(
+            {"index_sha256": digest(root_raw), "metadata": sorted(self.verified)}
+        ), self.images
+
+
+def _oci_metadata(path, field, expected):
+    """Validate the OCI digest graph without extracting or executing layer data."""
+    with tarfile.open(path, mode="r:*") as archive:
+        return _OciMetadata(archive, field, expected).verify()
+
+
+def _oci_artifact(path, declaration, expected):
+    require(
+        "field" in declaration and "package" not in declaration,
+        "OCI artifact requires an exact config field and no package selector",
+    )
+    raw, images = _oci_metadata(path, _field(declaration["field"]), expected)
+    result = {"field": declaration["field"], "version": expected, "images": images}
+    return raw, result
+
+
+def _python_artifact(path, declaration, expected):
+    kind = declaration["format"]
+    require("package" in declaration, "Package artifact requires an owned name")
+    if kind == "wheel":
+        raw = _zip_metadata(
+            path,
+            lambda name: (
+                len(name.split("/")) == 2 and name.endswith(".dist-info/METADATA")
+            ),
+        )
+    else:
+
+        def predicate(name):
+            return len(name.split("/")) == 2 and name.endswith("/PKG-INFO")
+
+        raw = (
+            _zip_metadata(path, predicate)
+            if zipfile.is_zipfile(path)
+            else _tar_metadata(path, predicate)
+        )
+    result = _metadata_message(raw, declaration["package"], expected)
+    return raw, result
+
+
+def _npm_artifact(path, declaration, expected):
+    require("package" in declaration, "npm artifact requires an owned name")
+    raw = _tar_metadata(path, lambda name: name == "package/package.json")
+    data = json.loads(raw)
+    require(
+        data.get("name") == declaration["package"] and data.get("version") == expected,
+        "npm artifact identity mismatch",
+    )
+    result = {"package": data["name"], "version": data["version"]}
+    return raw, result
+
+
+def _archive_artifact(path, declaration, expected):
+    kind = declaration["format"]
+    member = declaration["member"]
+    read = _zip_metadata if kind.startswith("zip-") else _tar_metadata
+    raw = read(path, lambda name: _archive_name(name) == member)
+    if kind == "tar-text":
+        actual = raw.decode().strip()
+        require(
+            bool(actual) and not any(char.isspace() for char in actual),
+            "Text artifact version must be one value",
+        )
+    else:
+        require("field" in declaration, "Artifact metadata requires an exact field")
+        data = (
+            tomllib.loads(raw.decode())
+            if kind == "tar-toml"
+            else _json_document(raw)[1]
+        )
+        field = _field(declaration["field"])
+        actual = _get(data, field)
+        if "package" in declaration:
+            name_field = field[:-1] + ("name",) if kind == "tar-toml" else ("name",)
+            require(
+                _get(data, name_field) == declaration["package"],
+                "Archive metadata package identity mismatch",
+            )
+    require(
+        str(actual) == expected,
+        f"Artifact field mismatch: expected {expected}, got {actual}",
+    )
+    result = {
+        "member": member,
+        "field": declaration.get("field"),
+        "version": str(actual),
+    }
+    return raw, result
+
+
+def _field_artifact(path, declaration, expected):
+    kind = declaration["format"]
+    require("field" in declaration, "Artifact metadata requires an exact field")
+    if kind == "ipa":
+        raw = _zip_metadata(
+            path,
+            lambda name: (
+                name.startswith("Payload/")
+                and name.count("/") == 2
+                and name.endswith(".app/Info.plist")
+            ),
+        )
+        data = plistlib.loads(raw)
+    else:
+        require(path.stat().st_size <= MAX_METADATA, "Artifact metadata is too large")
+        raw = path.read_bytes()
+        data = plistlib.loads(raw) if kind == "plist" else _json_document(raw)[1]
+    actual = _get(data, _field(declaration["field"]))
+    require(
+        str(actual) == expected,
+        f"Artifact field mismatch: expected {expected}, got {actual}",
+    )
+    result = {"field": declaration["field"], "version": str(actual)}
+    return raw, result
 
 
 def verify_artifact(path, declaration, plan):  # pylint: disable=too-many-statements
@@ -1465,100 +1703,16 @@ def verify_artifact(path, declaration, plan):  # pylint: disable=too-many-statem
     expected = str(projected_value(plan, declaration))
     kind = declaration["format"]
     if kind == "oci":
-        require(
-            "field" in declaration and "package" not in declaration,
-            "OCI artifact requires an exact config field and no package selector",
-        )
-        raw, images = _oci_metadata(path, _field(declaration["field"]), expected)
-        result = {"field": declaration["field"], "version": expected, "images": images}
+        checker = _oci_artifact
     elif kind in {"wheel", "sdist"}:
-        require("package" in declaration, "Package artifact requires an owned name")
-        if kind == "wheel":
-            raw = _zip_metadata(
-                path,
-                lambda name: (
-                    len(name.split("/")) == 2 and name.endswith(".dist-info/METADATA")
-                ),
-            )
-        else:
-
-            def predicate(name):
-                return len(name.split("/")) == 2 and name.endswith("/PKG-INFO")
-
-            raw = (
-                _zip_metadata(path, predicate)
-                if zipfile.is_zipfile(path)
-                else _tar_metadata(path, predicate)
-            )
-        result = _metadata_message(raw, declaration["package"], expected)
+        checker = _python_artifact
     elif kind == "npm-tar":
-        require("package" in declaration, "npm artifact requires an owned name")
-        raw = _tar_metadata(path, lambda name: name == "package/package.json")
-        data = json.loads(raw)
-        require(
-            data.get("name") == declaration["package"]
-            and data.get("version") == expected,
-            "npm artifact identity mismatch",
-        )
-        result = {"package": data["name"], "version": data["version"]}
+        checker = _npm_artifact
     elif kind in {"tar-text", "tar-toml", "tar-json", "zip-json"}:
-        member = declaration["member"]
-        read = _zip_metadata if kind.startswith("zip-") else _tar_metadata
-        raw = read(path, lambda name: _archive_name(name) == member)
-        if kind == "tar-text":
-            actual = raw.decode().strip()
-            require(
-                bool(actual) and not any(char.isspace() for char in actual),
-                "Text artifact version must be one value",
-            )
-        else:
-            require("field" in declaration, "Artifact metadata requires an exact field")
-            data = (
-                tomllib.loads(raw.decode())
-                if kind == "tar-toml"
-                else _json_document(raw)[1]
-            )
-            field = _field(declaration["field"])
-            actual = _get(data, field)
-            if "package" in declaration:
-                name_field = field[:-1] + ("name",) if kind == "tar-toml" else ("name",)
-                require(
-                    _get(data, name_field) == declaration["package"],
-                    "Archive metadata package identity mismatch",
-                )
-        require(
-            str(actual) == expected,
-            f"Artifact field mismatch: expected {expected}, got {actual}",
-        )
-        result = {
-            "member": member,
-            "field": declaration.get("field"),
-            "version": str(actual),
-        }
+        checker = _archive_artifact
     else:
-        require("field" in declaration, "Artifact metadata requires an exact field")
-        if kind == "ipa":
-            raw = _zip_metadata(
-                path,
-                lambda name: (
-                    name.startswith("Payload/")
-                    and name.count("/") == 2
-                    and name.endswith(".app/Info.plist")
-                ),
-            )
-            data = plistlib.loads(raw)
-        else:
-            require(
-                path.stat().st_size <= MAX_METADATA, "Artifact metadata is too large"
-            )
-            raw = path.read_bytes()
-            data = plistlib.loads(raw) if kind == "plist" else _json_document(raw)[1]
-        actual = _get(data, _field(declaration["field"]))
-        require(
-            str(actual) == expected,
-            f"Artifact field mismatch: expected {expected}, got {actual}",
-        )
-        result = {"field": declaration["field"], "version": str(actual)}
+        checker = _field_artifact
+    raw, result = checker(path, declaration, expected)
     return {
         "path": str(path),
         "format": kind,
@@ -1566,6 +1720,31 @@ def verify_artifact(path, declaration, plan):  # pylint: disable=too-many-statem
         "metadata_sha256": digest(raw),
         **result,
     }
+
+
+def _write_input_evidence(root, output_path, policy, plan, result):
+    output = output_path if output_path.is_absolute() else root / output_path
+    require(
+        output.parent.resolve() == root and not output.is_symlink(),
+        "Evidence output must be a plain file in the checkout root",
+    )
+    require(
+        output.name not in {item["path"] for item in policy["versioning"]["files"]},
+        "Evidence output must not overwrite a version input",
+    )
+    atomic_write_bytes(
+        root / output.name,
+        json_bytes(
+            {
+                "schema": 1,
+                "plan_sha256": plan_digest(plan),
+                "source_sha": plan["source_sha"],
+                "files": result,
+                "effective_inputs_sha256": effective_inputs_digest(result),
+            }
+        )
+        + b"\n",
+    )
 
 
 def main(argv=None):  # pylint: disable=too-many-locals
@@ -1606,33 +1785,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
             verify_checkout(root, policy, plan)
             result = sync_versions(root, policy, plan, check=options.check)
             if not options.check:
-                output = (
-                    options.output
-                    if options.output.is_absolute()
-                    else root / options.output
-                )
-                require(
-                    output.parent.resolve() == root and not output.is_symlink(),
-                    "Evidence output must be a plain file in the checkout root",
-                )
-                require(
-                    output.name
-                    not in {item["path"] for item in policy["versioning"]["files"]},
-                    "Evidence output must not overwrite a version input",
-                )
-                atomic_write_bytes(
-                    root / output.name,
-                    json_bytes(
-                        {
-                            "schema": 1,
-                            "plan_sha256": plan_digest(plan),
-                            "source_sha": plan["source_sha"],
-                            "files": result,
-                            "effective_inputs_sha256": effective_inputs_digest(result),
-                        }
-                    )
-                    + b"\n",
-                )
+                _write_input_evidence(root, options.output, policy, plan, result)
         print(json.dumps(result, indent=2))
         return 0
     except (

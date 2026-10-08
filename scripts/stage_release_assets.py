@@ -1,26 +1,117 @@
 #!/usr/bin/env python3
-# Vendored release toolkit; change the toolkit source, then render again.
-# ruff: noqa
-# mypy: ignore-errors
-# pylint: skip-file
-# fmt: off
 """Stage only declared final upload files and bind them to frozen version inputs."""
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
 import glob
 import hashlib
 import json
 import re
 import shutil
-import subprocess
+
+# Subprocess calls below use argument vectors with shell=False.
+import subprocess  # nosec B404
 import sys
 from pathlib import Path
 
 import version_plan
 from release_version_adapter import resolve_plan_path
+
+
+def checked_payload_path(root: Path, matched: str) -> Path:
+    """Reject payload paths that escape the checkout or contain symlinks."""
+    path = Path(matched)
+    path.resolve(strict=True).relative_to(root)
+    if any(
+        parent.is_symlink()
+        for parent in path.parents
+        if parent != root and root in parent.parents
+    ):
+        raise ValueError("Release payload path contains a symlink")
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"Release payload must be a regular file: {matched}")
+    return path
+
+
+def collect_payloads(root: Path, patterns: list[str]) -> dict[str, Path]:
+    """Expand explicit patterns and keep one source for each flat asset name."""
+    files: dict[str, Path] = {}
+    for pattern in patterns:
+        if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+            raise ValueError("Release asset patterns must stay inside the checkout")
+        matches = sorted(glob.glob(str(root / pattern), recursive=True))
+        if not matches:
+            raise ValueError(f"Release asset pattern matched no files: {pattern}")
+        for matched in matches:
+            path = checked_payload_path(root, matched)
+            key = path.name.casefold()
+            if key in files and files[key] != path:
+                raise ValueError(f"Duplicate release payload basename: {path.name}")
+            files[key] = path
+    return files
+
+
+def verify_staged_inputs(root: Path, policy: dict, inputs: dict) -> None:
+    """Check complete version-source coverage and unchanged prepared bytes."""
+    declared_paths = {item["path"] for item in policy["versioning"]["files"]}
+    input_paths = [item["path"] for item in inputs["files"]]
+    if len(set(input_paths)) != len(input_paths) or set(input_paths) != declared_paths:
+        raise ValueError(
+            "Build inputs must cover every declared version source exactly once"
+        )
+    for entry in inputs["files"]:
+        current = root / entry["path"]
+        if hashlib.sha256(current.read_bytes()).hexdigest() != entry["after_sha256"]:
+            raise ValueError(
+                f"Version input changed after plan preparation: {entry['path']}"
+            )
+
+
+def inspect_staged_artifacts(output, files, policy, identity) -> list[dict]:
+    """Inspect the declared metadata only after payloads and inputs are checked."""
+    metadata = []
+    for declaration in policy["versioning"].get("artifacts", []):
+        for path in files.values():
+            if fnmatch.fnmatchcase(path.name, declaration["path"]):
+                inspected = version_plan.verify_artifact(
+                    output / path.name, declaration, identity
+                )
+                inspected["path"] = path.name
+                metadata.append(inspected)
+    return metadata
+
+
+def write_staged_files(root, output, files, policy, identity, plan) -> None:
+    """Copy checked inputs and write the receipt into our new target directory."""
+    for path in files.values():
+        shutil.copy2(path, output / path.name)
+    metadata = inspect_staged_artifacts(output, files, policy, identity)
+    receipt = output / f"release-inputs-{output.name}.json"
+    # Repository-controlled argv; no shell interpolation or external command text.
+    subprocess.run(  # nosec B603
+        [
+            sys.executable,
+            str(root / "scripts/version_receipt.py"),
+            "create",
+            "--plan",
+            str(plan),
+            "--inputs",
+            str(root / ".release-inputs.json"),
+            "--assets",
+            str(output),
+            "--output",
+            str(receipt),
+        ],
+        check=True,
+    )
+    evidence = json.loads(receipt.read_text(encoding="utf-8"))
+    evidence["artifact_metadata"] = metadata
+    receipt.write_text(
+        json.dumps(evidence, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def stage(root: Path, target: str, patterns: list[str]) -> Path:
@@ -35,28 +126,7 @@ def stage(root: Path, target: str, patterns: list[str]) -> Path:
         raise ValueError("Release staging parent must not be a symlink")
     if output.exists():
         raise ValueError("Release staging directory must not already exist")
-    files: dict[str, Path] = {}
-    for pattern in patterns:
-        if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
-            raise ValueError("Release asset patterns must stay inside the checkout")
-        matches = sorted(glob.glob(str(root / pattern), recursive=True))
-        if not matches:
-            raise ValueError(f"Release asset pattern matched no files: {pattern}")
-        for matched in matches:
-            path = Path(matched)
-            path.resolve(strict=True).relative_to(root)
-            if any(
-                parent.is_symlink()
-                for parent in path.parents
-                if parent != root and root in parent.parents
-            ):
-                raise ValueError("Release payload path contains a symlink")
-            if path.is_symlink() or not path.is_file():
-                raise ValueError(f"Release payload must be a regular file: {matched}")
-            key = path.name.casefold()
-            if key in files and files[key] != path:
-                raise ValueError(f"Duplicate release payload basename: {path.name}")
-            files[key] = path
+    files = collect_payloads(root, patterns)
     plan = resolve_plan_path(root)
     if not plan.exists():
         raise ValueError(
@@ -64,11 +134,9 @@ def stage(root: Path, target: str, patterns: list[str]) -> Path:
         )
     if plan.is_symlink() or not plan.is_file():
         raise ValueError("Release plan must be a regular file")
-    output.mkdir(parents=True)
-    for path in files.values():
-        shutil.copy2(path, output / path.name)
     policy = json.loads((root / ".release-policy.json").read_text(encoding="utf-8"))
-    source_sha = subprocess.check_output(
+    # Developer/CI toolchain selected by the invoking operator via PATH.
+    source_sha = subprocess.check_output(  # nosec B603, B607
         ["git", "rev-parse", "HEAD"], cwd=root, text=True
     ).strip()
     identity = version_plan.validate_plan(
@@ -78,49 +146,18 @@ def stage(root: Path, target: str, patterns: list[str]) -> Path:
     )
     version_plan.sync_versions(root, policy, identity, check=True)
     inputs = json.loads((root / ".release-inputs.json").read_text(encoding="utf-8"))
-    declared_paths = {item["path"] for item in policy["versioning"]["files"]}
-    input_paths = [item["path"] for item in inputs["files"]]
-    if len(set(input_paths)) != len(input_paths) or set(input_paths) != declared_paths:
-        raise ValueError(
-            "Build inputs must cover every declared version source exactly once"
-        )
-    for entry in inputs["files"]:
-        current = root / entry["path"]
-        if hashlib.sha256(current.read_bytes()).hexdigest() != entry["after_sha256"]:
-            raise ValueError(
-                f"Version input changed after plan preparation: {entry['path']}"
-            )
-    metadata = []
-    for declaration in policy["versioning"].get("artifacts", []):
-        for path in files.values():
-            if fnmatch.fnmatchcase(path.name, declaration["path"]):
-                inspected = version_plan.verify_artifact(
-                    output / path.name, declaration, identity
-                )
-                inspected["path"] = path.name
-                metadata.append(inspected)
-    subprocess.run(
-        [
-            sys.executable,
-            str(root / "scripts/version_receipt.py"),
-            "create",
-            "--plan",
-            str(plan),
-            "--inputs",
-            str(root / ".release-inputs.json"),
-            "--assets",
-            str(output),
-            "--output",
-            str(output / f"release-inputs-{target}.json"),
-        ],
-        check=True,
-    )
-    receipt = output / f"release-inputs-{target}.json"
-    evidence = json.loads(receipt.read_text(encoding="utf-8"))
-    evidence["artifact_metadata"] = metadata
-    receipt.write_text(
-        json.dumps(evidence, sort_keys=True, indent=2) + "\n", encoding="utf-8"
-    )
+    verify_staged_inputs(root, policy, inputs)
+    parent_existed = output.parent.exists()
+    output.mkdir(parents=True)
+    try:
+        write_staged_files(root, output, files, policy, identity, plan)
+    except BaseException:
+        shutil.rmtree(output)
+        if not parent_existed:
+            # Remove only an empty parent we created; preserve sibling job output.
+            with contextlib.suppress(OSError):
+                output.parent.rmdir()
+        raise
     return output
 
 

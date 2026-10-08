@@ -1190,6 +1190,52 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
                 partial(rc.promote, arguments)
             )
 
+    def reject_missing_notes_without_mutation(self, operation):
+        """Invalid notes cannot replace retained evidence or advance the floor."""
+        ledger = copy.deepcopy(self.gh.ledger)
+        ledger_writes = copy.deepcopy(self.gh.ledger_writes)
+        writes = copy.deepcopy(self.gh.writes)
+        evidence = rc.EVIDENCE.read_bytes() if rc.EVIDENCE.exists() else None
+        with patch.object(
+            rc, "release_notes", side_effect=rc.ReleaseError("missing notes")
+        ):
+            with self.assertRaisesRegex(rc.ReleaseError, "missing notes"):
+                operation()
+        self.assertEqual(self.gh.ledger, ledger)
+        self.assertEqual(self.gh.ledger_writes, ledger_writes)
+        self.assertEqual(self.gh.writes, writes)
+        current = rc.EVIDENCE.read_bytes() if rc.EVIDENCE.exists() else None
+        self.assertEqual(current, evidence)
+
+    def test_candidate_notes_fail_before_evidence_or_publication_floor(self):
+        for channel, run_id in (("beta", 100), ("rc", 101), ("nightly", 102)):
+            with self.subTest(channel=channel):
+                self.start_run(channel, run_id)
+                lifecycle.prepare(self.args)
+                self.build_current()
+                self.reject_missing_notes_without_mutation(
+                    partial(lifecycle.publish_versioned, self.args)
+                )
+
+    def test_final_build_notes_fail_before_replacing_rc_evidence(self):
+        candidate, _, _ = self.release_run("rc", 100)
+        self.start_run("stable", 101, candidate["tag"])
+        lifecycle.prepare(self.args)
+        self.build_current()
+        self.reject_missing_notes_without_mutation(
+            partial(lifecycle.publish_versioned, self.args)
+        )
+
+    def test_byte_promotion_notes_fail_before_advancing_rc_floor(self):
+        self.policy = policy("promote-bytes")
+        self.gh.source_policies[SHA] = self.policy
+        Path(rc.POLICY).write_bytes(rc.json_bytes(self.policy))
+        candidate, _, _ = self.release_run("rc", 100)
+        self.start_run("stable", 101, candidate["tag"])
+        arguments = argparse.Namespace(repo=REPO, rc=candidate["tag"], run_id="101")
+        with patch.object(rc, "GitHub", return_value=self.gh):
+            self.reject_missing_notes_without_mutation(partial(rc.promote, arguments))
+
     def test_workflow_change_after_floor_write_still_cannot_create_tag(self):
         lifecycle.prepare(self.args)
         plan = self.build_current()

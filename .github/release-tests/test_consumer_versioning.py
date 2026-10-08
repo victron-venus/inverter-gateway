@@ -100,7 +100,8 @@ class ConsumerVersioningTests(unittest.TestCase):
         self.source = self.command("git", "rev-parse", "HEAD").strip()
 
     def command(self, *args):
-        return subprocess.check_output(
+        # Isolated test fixture; explicit argv, never shell interpolation.
+        return subprocess.check_output(  # nosec B603
             args, cwd=self.root, text=True, stderr=subprocess.STDOUT
         )
 
@@ -186,6 +187,7 @@ class ConsumerVersioningTests(unittest.TestCase):
         path.write_text(json.dumps(evidence), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "every declared version source"):
             stage_release_assets.stage(self.root, "native", ["dist/*.tar.gz"])
+        self.assertFalse((self.root / "release-assets").exists())
 
     def test_staging_rejects_source_changes_after_overlay(self):
         self.freeze()
@@ -193,6 +195,7 @@ class ConsumerVersioningTests(unittest.TestCase):
         self.archive()
         with self.assertRaises(ValueError):
             stage_release_assets.stage(self.root, "native", ["dist/*.tar.gz"])
+        self.assertFalse((self.root / "release-assets").exists())
 
     def test_stable_final_build_requires_explicit_policy_and_frozen_plan(self):
         with self.assertRaisesRegex(ValueError, "promote verified RC"):
@@ -220,6 +223,94 @@ class ConsumerVersioningTests(unittest.TestCase):
                         "org.opencontainers.image.revision": self.source,
                     },
                 )
+
+    def test_base_rejects_non_ascii_digits_and_noncanonical_versions(self):
+        for version in ("1٢.2.3", "1.2٢.3", "1.2.3٢", "１.2.3", "01.2.3", "1.2.3\n"):
+            with self.subTest(version=version):
+                with self.assertRaisesRegex(ValueError, "numeric base"):
+                    release_version_adapter.checked_version(self.root, version, "beta")
+        self.assertFalse((self.root / ".release-plan.json").exists())
+
+    def test_staging_rejects_ambiguous_or_unsafe_payloads_before_output(self):
+        self.freeze()
+        self.archive()
+        other = self.root / "other"
+        other.mkdir()
+        (other / "APP.TAR.GZ").write_bytes(b"different payload with colliding name")
+        linked = self.root / "linked-dist"
+        linked.symlink_to(self.root / "dist", target_is_directory=True)
+        for patterns, message in (
+            (["../outside.tar.gz"], "inside the checkout"),
+            (["missing/*.tar.gz"], "matched no files"),
+            (["dist"], "regular file"),
+            (["dist/*.tar.gz", "other/*"], "Duplicate release payload basename"),
+            (["linked-dist/*.tar.gz"], "symlink"),
+        ):
+            with self.subTest(patterns=patterns):
+                with self.assertRaisesRegex(ValueError, message):
+                    stage_release_assets.stage(self.root, "native", patterns)
+                self.assertFalse((self.root / "release-assets").exists())
+
+    def test_invalid_archive_does_not_leave_staging_and_can_be_retried(self):
+        self.freeze()
+        self.archive()
+        with tarfile.open(self.root / "dist/app.tar.gz", "w:gz") as archive:
+            raw = b"9.9.9\n"
+            entry = tarfile.TarInfo("app/VERSION")
+            entry.size = len(raw)
+            archive.addfile(entry, io.BytesIO(raw))
+        with self.assertRaises(ValueError):
+            stage_release_assets.stage(self.root, "native", ["dist/*.tar.gz"])
+        self.assertFalse((self.root / "release-assets").exists())
+        self.archive()
+        output = stage_release_assets.stage(self.root, "native", ["dist/*.tar.gz"])
+        self.assertTrue((output / "release-inputs-native.json").is_file())
+
+    def test_partial_copy_failure_preserves_existing_sibling(self):
+        self.freeze()
+        self.archive()
+        parent = self.root / "release-assets"
+        parent.mkdir()
+        sibling = parent / "operator-file"
+        sibling.write_bytes(b"preserve existing data")
+
+        def fail_after_partial_copy(source, destination):
+            destination.write_bytes(b"partial")
+            raise OSError("simulated disk failure")
+
+        with patch.object(stage_release_assets.shutil, "copy2", fail_after_partial_copy):
+            with self.assertRaisesRegex(OSError, "simulated disk failure"):
+                stage_release_assets.stage(self.root, "native", ["dist/*.tar.gz"])
+        self.assertEqual(list(parent.iterdir()), [sibling])
+        self.assertEqual(sibling.read_bytes(), b"preserve existing data")
+        stage_release_assets.stage(self.root, "native", ["dist/*.tar.gz"])
+
+    def test_failed_receipt_writer_cleans_output_and_allows_retry(self):
+        self.freeze()
+        self.archive()
+        real_run = subprocess.run
+
+        def fail_receipt(command, *args, **kwargs):
+            if any(str(arg).endswith("version_receipt.py") for arg in command):
+                raise subprocess.CalledProcessError(17, command)
+            return real_run(command, *args, **kwargs)
+
+        with patch.object(stage_release_assets.subprocess, "run", fail_receipt):
+            with self.assertRaises(subprocess.CalledProcessError):
+                stage_release_assets.stage(self.root, "native", ["dist/*.tar.gz"])
+        self.assertFalse((self.root / "release-assets").exists())
+        stage_release_assets.stage(self.root, "native", ["dist/*.tar.gz"])
+
+    def test_staging_failure_never_removes_preexisting_target(self):
+        self.freeze()
+        self.archive()
+        output = self.root / "release-assets/native"
+        output.mkdir(parents=True)
+        existing = output / "keep.txt"
+        existing.write_bytes(b"existing target")
+        with self.assertRaisesRegex(ValueError, "must not already exist"):
+            stage_release_assets.stage(self.root, "native", ["dist/*.tar.gz"])
+        self.assertEqual(existing.read_bytes(), b"existing target")
 
 
 if __name__ == "__main__":

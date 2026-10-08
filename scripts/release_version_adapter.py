@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-# Vendored release toolkit; change the toolkit source, then render again.
-# ruff: noqa
-# mypy: ignore-errors
-# pylint: skip-file
-# fmt: off
 """Validate a committed base or its frozen build overlay without allocating versions."""
 
 from __future__ import annotations
@@ -12,7 +7,9 @@ import argparse
 import json
 import os
 import re
-import subprocess
+
+# Subprocess calls below use argument vectors with shell=False.
+import subprocess  # nosec B404
 from pathlib import Path
 
 import version_plan
@@ -32,7 +29,7 @@ def resolve_plan_path(root: Path) -> Path:
 def checked_version(root: Path, base: str, channel: str) -> str:
     """Check every declared input and return the actual SemVer package version."""
     if not re.fullmatch(
-        r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", base
+        r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", base, re.ASCII
     ):
         raise ValueError("Release version must be a numeric base X.Y.Z")
     if channel not in {"nightly", "beta", "rc", "stable"}:
@@ -55,7 +52,8 @@ def checked_version(root: Path, base: str, channel: str) -> str:
         return base
     if plan_path.is_symlink() or not plan_path.is_file():
         raise ValueError("Release plan must be a regular file")
-    source_sha = subprocess.check_output(
+    # Developer/CI toolchain selected by the invoking operator via PATH.
+    source_sha = subprocess.check_output(  # nosec B603, B607
         ["git", "rev-parse", "HEAD"], cwd=root, text=True
     ).strip()
     plan = version_plan.validate_plan(

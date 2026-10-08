@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import unittest
 import zipfile
 from contextlib import redirect_stderr, redirect_stdout
@@ -91,18 +92,20 @@ class PlanTest(unittest.TestCase):
         )
 
     def test_malformed_identity_fails_closed(self):
+        configuration = policy()
+        uppercase_sha = SHA.upper()
         for base in ("v1.2.3", "1.02.3", "1.2", "1.2.3-beta.1", "1.2.3\n", "1.2.٣"):
             with self.subTest(base=base), self.assertRaises(ValueError):
-                version.create_plan(base, "beta", 1, SHA, policy())
+                version.create_plan(base, "beta", 1, SHA, configuration)
         for sequence in (True, 0, -1, "1", None):
             with self.subTest(sequence=sequence), self.assertRaises(ValueError):
-                version.create_plan("1.2.3", "rc", sequence, SHA, policy())
+                version.create_plan("1.2.3", "rc", sequence, SHA, configuration)
         with self.assertRaises(ValueError):
-            version.create_plan("1.2.3", "stable", 1, SHA, policy())
+            version.create_plan("1.2.3", "stable", 1, SHA, configuration)
         with self.assertRaises(ValueError):
-            version.create_plan("1.2.3", "nightly", "20260230235959.1.1", SHA, policy())
+            version.create_plan("1.2.3", "nightly", "20260230235959.1.1", SHA, configuration)
         with self.assertRaises(ValueError):
-            version.create_plan("1.2.3", "beta", 1, SHA.upper(), policy())
+            version.create_plan("1.2.3", "beta", 1, uppercase_sha, configuration)
 
     def test_real_nightly_run_fits_uv_numeric_limit(self):
         plan = version.create_plan(
@@ -280,6 +283,7 @@ class AdapterTest(unittest.TestCase):  # pylint: disable=too-many-public-methods
         self.assertFalse(list(self.root.glob(".version-sync-*")))
 
     def test_json_missing_duplicate_and_wrong_owner_rejected(self):
+        files = policy()["versioning"]["files"]
         for raw in (
             '{"name":"product"}',
             '{"name":"other","version":"2.5.42"}',
@@ -287,7 +291,7 @@ class AdapterTest(unittest.TestCase):  # pylint: disable=too-many-public-methods
         ):
             path = self.write("package.json", raw)
             with self.subTest(raw=raw), self.assertRaises(ValueError):
-                self.sync(policy()["versioning"]["files"])
+                self.sync(files)
             self.assertEqual(path.read_text(), raw)
 
     def test_npm_lock_changes_only_root_owned_entries(self):
@@ -382,6 +386,86 @@ class AdapterTest(unittest.TestCase):  # pylint: disable=too-many-public-methods
         self.assertIn(
             'release.version = "2.5.42-beta.2"', (self.root / "config.toml").read_text()
         )
+
+    def test_toml_table_delimiters_inside_quoted_keys_are_literal(self):
+        for quoted, key in (
+            ('"bracket]#key"', "bracket]#key"),
+            ("'bracket]#key'", "bracket]#key"),
+            ('"escaped\\\"quote]key"', 'escaped"quote]key'),
+        ):
+            with self.subTest(quoted=quoted):
+                before = f"[tool.{quoted}] # trailing [comment]\nversion = '2.5.42'\n"
+                path = self.write("config.toml", before)
+                self.sync([{
+                    "path": "config.toml", "format": "toml",
+                    "field": ["tool", key, "version"],
+                }])
+                self.assertEqual(path.read_text(), before.replace("2.5.42", "2.5.42-beta.2"))
+
+    def test_toml_quoted_assignment_keys_preserve_delimiters_and_escapes(self):
+        cases = (
+            ('"a=b"', "a=b"),
+            ('"a#b"', "a#b"),
+            ("'literal=#key'", "literal=#key"),
+            (r'"escaped\"=quote#key"', 'escaped"=quote#key'),
+            (r'"backslash\\=key#"', 'backslash\\=key#'),
+            (r'"\u0023\u003d"', "#="),
+            ('""', ""),
+            (r"'literal\=#key'", 'literal\\=#key'),
+        )
+        for quoted, key in cases:
+            with self.subTest(quoted=quoted):
+                assignment = f'release.{quoted} = "2.5.42"'
+                before = (
+                    '# release.fake = "2.5.42"\n[tool]\n'
+                    'unrelated = "2.5.42"\n'
+                    + assignment + ' # preserve = and # here\n'
+                )
+                self.assertEqual(tomllib.loads(before)["tool"]["release"][key], "2.5.42")
+                path = self.write("config.toml", before)
+                self.sync([{
+                    "path": "config.toml", "format": "toml",
+                    "field": ["tool", "release", key],
+                }])
+                expected = before.replace(assignment, assignment.replace('"2.5.42"', '"2.5.42-beta.2"'))
+                self.assertEqual(path.read_text(), expected)
+                self.assertEqual(tomllib.loads(expected)["tool"]["release"][key], "2.5.42-beta.2")
+
+    def test_toml_unrelated_quoted_assignment_keys_do_not_block_version_sync(self):
+        before = (
+            '"a=b" = 1\n"a#b" = "2.5.42"\n'
+            "'literal=#key' = 2\n"
+            '# "fake=key" = "2.5.42"\n[project]\n'
+            'version = "2.5.42" # retain comment = text\n'
+        )
+        self.assertEqual(tomllib.loads(before)["a#b"], "2.5.42")
+        path = self.write("config.toml", before)
+        self.sync([{
+            "path": "config.toml", "format": "toml", "field": "project.version",
+        }])
+        self.assertEqual(path.read_text(), before.replace('version = "2.5.42"', 'version = "2.5.42-beta.2"'))
+
+    def test_toml_long_quoted_assignment_key_preserves_layout(self):
+        key = 'escaped"=#\\' * 10000
+        before = json.dumps(key) + ' = 1 # ignored = delimiter\nversion = "2.5.42"\n'
+        self.assertEqual(tomllib.loads(before)[key], 1)
+        path = self.write("config.toml", before)
+        self.sync([{"path": "config.toml", "format": "toml", "field": "version"}])
+        self.assertEqual(path.read_text(), before.replace('version = "2.5.42"', 'version = "2.5.42-beta.2"'))
+
+    def test_toml_long_whitespace_and_header_comment_preserve_layout(self):
+        padding = " " * 4000
+        before = (
+            padding + "\n"
+            + padding + "[project]" + padding + "# [brackets] in comment\n"
+            + 'name = "product"\n'
+            + "version" + padding + "=" + padding + '"2.5.42" # retained\n'
+        )
+        path = self.write("pyproject.toml", before)
+        self.sync(
+            [{"path": "pyproject.toml", "format": "toml", "field": "project.version"}]
+        )
+        self.assertEqual(path.read_text(), before.replace('"2.5.42"', '"2.5.42-beta.2"'))
 
     def test_toml_continued_arrays_inline_tables_and_strings_are_not_assignments(self):
         before = (
@@ -934,8 +1018,9 @@ class ArtifactTest(unittest.TestCase):
 
     def test_oci_missing_or_wrong_label_on_any_platform_fails(self):
         for label in (None, "2.5.42", "2.5.41-beta.2"):
+            entries = self.oci_entries(("2.5.42-beta.2", label), nested=True)
             with self.subTest(label=label), self.assertRaises(ValueError):
-                self.verify_oci(self.oci_entries(("2.5.42-beta.2", label), nested=True))
+                self.verify_oci(entries)
 
     def test_oci_tampered_config_digest_and_size_fail(self):
         original = self.oci_entries()
@@ -965,8 +1050,9 @@ class ArtifactTest(unittest.TestCase):
             self.verify_oci(unsupported)
 
     def test_oci_no_runnable_image_or_disguised_attestation_fails(self):
+        empty_entries = self.oci_entries((), attestation=True)
         with self.assertRaisesRegex(ValueError, "no runnable images"):
-            self.verify_oci(self.oci_entries((), attestation=True))
+            self.verify_oci(empty_entries)
         entries = self.oci_entries()
         index = json.loads(entries["index.json"])
         descriptor = index["manifests"][0]
