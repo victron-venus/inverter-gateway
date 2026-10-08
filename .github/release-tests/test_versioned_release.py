@@ -568,6 +568,9 @@ class ReceiptTests(unittest.TestCase):
             for path in self.assets.iterdir()
         ]
 
+    def snapshot(self):
+        return {path.name: path.read_bytes() for path in self.assets.iterdir()}
+
     def test_overlay_receipt_binds_exact_payload_and_inputs(self):
         self.create()
         verified = receipt.verify_receipts(
@@ -581,13 +584,17 @@ class ReceiptTests(unittest.TestCase):
         original = (self.assets / "app.bin").read_bytes()
         (self.assets / "app.bin").write_bytes(b"different binary")
         staged = self.staged()
+        snapshot = self.snapshot()
         with self.assertRaisesRegex(ValueError, "does not match"):
             receipt.verify_receipts(self.assets, self.plan, staged)
+        self.assertEqual(self.snapshot(), snapshot)
         (self.assets / "app.bin").write_bytes(original)
         (self.assets / "uncovered.bin").write_bytes(b"missing evidence")
         staged = self.staged()
+        snapshot = self.snapshot()
         with self.assertRaisesRegex(ValueError, "payloads lack version input evidence"):
             receipt.verify_receipts(self.assets, self.plan, staged)
+        self.assertEqual(self.snapshot(), snapshot)
 
     def test_other_plan_or_partial_input_inventory_is_rejected(self):
         self.create()
