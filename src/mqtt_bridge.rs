@@ -488,7 +488,9 @@ mod tests {
             .with_no_client_auth()
             .with_single_cert(
                 vec![identity.cert.der().clone()],
-                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.key_pair.serialize_der())),
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+                    identity.signing_key.serialize_der(),
+                )),
             )
             .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

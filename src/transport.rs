@@ -126,7 +126,7 @@ mod tests {
     struct CertificateFiles {
         _directory: tempfile::TempDir,
         config: HttpsConfig,
-        certificate: rcgen::CertifiedKey,
+        certificate: rcgen::CertifiedKey<rcgen::KeyPair>,
     }
 
     impl CertificateFiles {
@@ -139,7 +139,7 @@ mod tests {
                 key_file: directory.path().join("key.pem"),
             };
             std::fs::write(&config.cert_file, certificate.cert.pem()).unwrap();
-            std::fs::write(&config.key_file, certificate.key_pair.serialize_pem()).unwrap();
+            std::fs::write(&config.key_file, certificate.signing_key.serialize_pem()).unwrap();
             Self {
                 _directory: directory,
                 config,
