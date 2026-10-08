@@ -58,7 +58,7 @@ class ReleaseBuildTests(unittest.TestCase):
         path.write_text("#!/bin/sh\n" + body)
         path.chmod(0o755)
 
-    def run_build(self, shell, **overrides):
+    def run_build(self, shell, *, shell_options=(), **overrides):
         self.trace.unlink(missing_ok=True)
         output = self.root / "release-output"
         if output.exists():
@@ -75,7 +75,13 @@ class ReleaseBuildTests(unittest.TestCase):
             **overrides,
         }
         result = subprocess.run(
-            [shell, str(self.root / "scripts/release-build.sh"), "1.2.3", "rc"],
+            [
+                shell,
+                *shell_options,
+                str(self.root / "scripts/release-build.sh"),
+                "1.2.3",
+                "rc",
+            ],
             cwd=self.root,
             env=env,
             check=False,
@@ -120,6 +126,28 @@ class ReleaseBuildTests(unittest.TestCase):
                     (self.root / "release-output/build-info.json").exists()
                 )
 
+    def test_version_identity_stays_case_sensitive_with_nocasematch(self):
+        for shell in self.shells:
+            for suffix, expected_status in (("rc", 0), ("RC", 1)):
+                with self.subTest(shell=shell, suffix=suffix):
+                    result, trace = self.run_build(
+                        shell,
+                        shell_options=("-O", "nocasematch"),
+                        BINARY_VERSION=f"inverter-gateway 1.2.3-{suffix}.1",
+                    )
+                    self.assertEqual(result.returncode, expected_status, result.stderr)
+                    expected_trace = list(BUILD_PREFIX)
+                    if expected_status == 0:
+                        expected_trace += [
+                            "python:scripts/write_binary_build_metadata.py",
+                            "tar",
+                        ]
+                    self.assertEqual(trace, expected_trace)
+                    self.assertEqual(
+                        (self.root / "release-output/build-info.json").exists(),
+                        expected_status == 0,
+                    )
+
     def test_build_failure_preserves_status_and_stops_later_steps(self):
         for shell in self.shells:
             with self.subTest(shell=shell):
@@ -131,6 +159,9 @@ class ReleaseBuildTests(unittest.TestCase):
                         "python:scripts/check-release-version.py",
                         "cargo:build --locked --release",
                     ],
+                )
+                self.assertFalse(
+                    (self.root / "release-output/build-info.json").exists()
                 )
 
 
