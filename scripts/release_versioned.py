@@ -555,18 +555,24 @@ def publish_versioned(args):
                         "Qualified same-input release; fresh nightly checks and builds passed"
                     ),
                 }
+        body = rc.release_notes(
+            gh,
+            plan["tag"],
+            plan["source_sha"],
+            description + f"\n\nSource: `{plan['source_sha']}`\n\n"
+            f"Validation: https://github.com/{gh.repo}/actions/runs/{run['id']}\n\n"
+            f"See `{rc.MANIFEST}` for package hashes and version input evidence.",
+        )
         rc.EVIDENCE.parent.mkdir(parents=True, exist_ok=True)
         rc.EVIDENCE.write_bytes(content)
         begin_publication(gh, plan, run["id"], parent)
-        result = rc.publish(
+        result = rc._publish_prepared(  # pylint: disable=protected-access
             gh,
             plan["tag"],
             plan["source_sha"],
             stage,
             channel != "stable",
-            description + f"\n\nSource: `{plan['source_sha']}`\n\n"
-            f"Validation: https://github.com/{gh.repo}/actions/runs/{run['id']}\n\n"
-            f"See `{rc.MANIFEST}` for package hashes and version input evidence.",
+            body,
         )
     return {
         "status": "published",
