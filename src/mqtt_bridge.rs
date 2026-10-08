@@ -3,7 +3,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS, Transport};
-use rustls::{ClientConfig, RootCertStore};
+use rustls::{
+    pki_types::{pem::PemObject, CertificateDer},
+    ClientConfig, RootCertStore,
+};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, trace, warn};
 
@@ -383,7 +386,7 @@ fn mqtt_transport(tls: bool, ca_file: Option<&Path>) -> Result<Transport, Config
 
 fn mqtt_ca_roots(pem: &[u8]) -> Result<RootCertStore, ConfigError> {
     let mut roots = RootCertStore::empty();
-    for cert in rustls_pemfile::certs(&mut std::io::Cursor::new(pem)) {
+    for cert in CertificateDer::pem_reader_iter(std::io::Cursor::new(pem)) {
         let cert = cert.map_err(|e| ConfigError::from(format!("invalid MQTT_CA_FILE PEM: {e}")))?;
         roots
             .add(cert)
@@ -466,6 +469,21 @@ mod tests {
             assert!(MqttBridge::new_client(&cfg).is_err());
         }
         assert!(mqtt_transport(false, Some(&ca_path)).is_err());
+    }
+
+    #[test]
+    fn mqtt_ca_reader_preserves_multiple_certificates_and_rejects_malformed_tail() {
+        let first = rcgen::generate_simple_self_signed(vec!["first.example".into()]).unwrap();
+        let second = rcgen::generate_simple_self_signed(vec!["second.example".into()]).unwrap();
+        let combined = format!(
+            "-----BEGIN PUBLIC KEY-----\nAQID\n-----END PUBLIC KEY-----\n{}{}",
+            first.cert.pem(),
+            second.cert.pem()
+        )
+        .replace('\n', "\r\n");
+        assert_eq!(mqtt_ca_roots(combined.as_bytes()).unwrap().len(), 2);
+        let malformed = format!("{combined}-----BEGIN CERTIFICATE-----\ninvalid!\n");
+        assert!(mqtt_ca_roots(malformed.as_bytes()).is_err());
     }
 
     #[test]
