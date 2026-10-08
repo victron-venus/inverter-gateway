@@ -89,6 +89,68 @@ def render(text=NOTES, tag="v1.2.3-beta.8", response_change=None):
 
 
 class ReleaseNotesTests(unittest.TestCase):
+    def test_empty_higher_level_atx_headings_end_sections(self):
+        for heading in ("#", "##"):
+            for ending in ("", "\n", "\r\n"):
+                text = "### Upgrade\nBefore.\n" + heading + ending
+                with self.subTest(heading=heading, ending=ending):
+                    [(title, raw, visible)] = list(release._release_sections(text, 3))
+                    self.assertEqual(
+                        (title, raw, visible.strip()), ("Upgrade", "Before.", "Before.")
+                    )
+        text = (
+            "## [1.2.3]\n#\n### Upgrade\nRead migration.\n### Security\nNo changes.\n"
+        )
+        with self.assertRaises(release.ReleaseError):
+            render(text)
+
+    def test_higher_level_appendix_cannot_supply_version_guidance(self):
+        for indent in ("", " ", "  ", "   "):
+            text = (
+                "## [1.2.3]\n" + indent + "# Appendix\n"
+                "### Upgrade\nRead unrelated migration.\n"
+                "### Security\nUnrelated security guidance.\n"
+            )
+            with self.subTest(indent=indent), self.assertRaises(release.ReleaseError):
+                render(text)
+
+    def test_valid_notes_stop_before_higher_level_appendix(self):
+        text = NOTES.replace("## [1.2.2]", "# Appendix\nUnrelated text.\n## [1.2.2]")
+        self.assertEqual(render(text), render(NOTES))
+
+    def test_higher_level_headings_end_raw_and_visible_guidance_sections(self):
+        for heading in ("# Appendix", "## [1.2.4]"):
+            text = (
+                "### Upgrade\nBefore <!-- hidden --> after.\n"
+                + heading
+                + "\nUnrelated.\n"
+            )
+            [(title, raw, visible)] = list(release._release_sections(text, 3))
+            self.assertEqual(title, "Upgrade")
+            self.assertEqual(raw, "Before <!-- hidden --> after.")
+            self.assertNotIn("hidden", visible)
+            self.assertNotIn("Unrelated", visible)
+            self.assertNotIn(heading, visible)
+
+    def test_higher_level_heading_does_not_hide_later_version_selection(self):
+        text = "# Introduction\nUnrelated.\n" + NOTES
+        self.assertEqual(render(text), render(NOTES))
+
+    def test_literal_and_commented_higher_level_headings_do_not_end_sections(self):
+        for example in (
+            "```markdown\n# Appendix\n```",
+            "~~~markdown\n# Appendix\n~~~",
+            "<!--\n# Appendix\n-->",
+            "<!-- comment --># Appendix",
+            "    # Appendix",
+            "#### Nested details",
+            "####### Not an ATX heading",
+            "#not-an-atx-heading",
+        ):
+            text = NOTES.replace("### Upgrade", example + "\n### Upgrade")
+            with self.subTest(example=example):
+                self.assertIn(example, render(text))
+
     def test_fenced_guidance_cannot_satisfy_real_sections(self):
         for marker in ("```", "````", "~~~", "~~~~~"):
             for indentation in ("", " ", "  ", "   "):
@@ -404,3 +466,65 @@ class ReleaseNotesTests(unittest.TestCase):
             github.calls, [("GET", f"contents/CHANGELOG.md?ref={SOURCE}", None)]
         )
         self.assertEqual(github.writes, [])
+
+    def test_indented_version_and_guidance_headings_are_supported(self):
+        for indentation in (" ", "  ", "   "):
+            text = "\n".join(
+                indentation + line if line.startswith(("## ", "### ")) else line
+                for line in NOTES.split("\n")
+            )
+            with self.subTest(indentation=indentation):
+                body = render(text)
+                self.assertIn("## Changes in 1.2.3", body)
+                self.assertIn(
+                    "Preserve unavailable telemetry instead of reporting zero.", body
+                )
+                self.assertNotIn("Do not copy older notes either.", body)
+
+    def test_comments_between_text_and_setext_underlines_do_not_hide_ambiguity(self):
+        text = (
+            "## [1.2.3]\nAppendix\n<!-- comment -->\n===\n"
+            "### Upgrade\nRead migration.\n### Security\nNo changes.\n"
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "ATX"):
+            render(text)
+
+    def test_setext_appendices_cannot_supply_release_guidance(self):
+        for underline in ("=", "===", "-", "---", "   ===", "   ---"):
+            text = (
+                "## [1.2.3]\nAppendix\n" + underline + "\n"
+                "### Upgrade\nRead migration.\n### Security\nNo changes.\n"
+            )
+            with (
+                self.subTest(underline=underline),
+                self.assertRaisesRegex(release.ReleaseError, "ATX"),
+            ):
+                render(text)
+            with (
+                self.subTest(underline=underline, newline="CRLF"),
+                self.assertRaisesRegex(release.ReleaseError, "ATX"),
+            ):
+                render(text.replace("\n", "\r\n"))
+
+    def test_setext_heading_inside_guidance_is_rejected(self):
+        text = NOTES.replace("### Security", "Underlined appendix\n---\n### Security")
+        with self.assertRaisesRegex(release.ReleaseError, "ATX"):
+            render(text)
+
+    def test_thematic_breaks_and_literal_setext_examples_remain_supported(self):
+        for example in (
+            "\n---\n",
+            "\n===\n",
+            "```markdown\nAppendix\n===\n```",
+            "~~~markdown\nAppendix\n---\n~~~",
+            "    Appendix\n    ===",
+            "<!--\nAppendix\n===\n-->",
+        ):
+            text = NOTES.replace("### Upgrade", example + "\n### Upgrade")
+            with self.subTest(example=example):
+                self.assertIn(example.strip(), render(text))
+        text = NOTES.replace("### Upgrade\n", "### Upgrade\n---\n")
+        self.assertIn("### Upgrade\n---\n", render(text))
+
+    def test_setext_outside_selected_release_does_not_change_body(self):
+        self.assertEqual(render("Changelog\n===\n" + NOTES), render(NOTES))

@@ -1095,14 +1095,16 @@ def _release_headings(text: str) -> list[tuple[int, str, int, int]]:
     headings = []
     offset = 0
     for line, heading_allowed, _ in _release_lines(text):
-        level = len(line) - len(line.lstrip("#"))
+        indentation = len(line) - len(line.lstrip(" "))
+        heading = line[indentation:] if indentation <= 3 else line
+        level = len(heading) - len(heading.lstrip("#"))
         if (
             heading_allowed
-            and level in (2, 3)
-            and line[level : level + 1] in (" ", "\t")
+            and 1 <= level <= 6
+            and heading[level : level + 1] in ("", " ", "\t", "\r", "\n")
         ):
             headings.append(
-                (level, line[level:].strip(" \t\r\n"), offset, offset + len(line))
+                (level, heading[level:].strip(" \t\r\n"), offset, offset + len(line))
             )
         offset += len(line)
     return headings
@@ -1111,8 +1113,10 @@ def _release_headings(text: str) -> list[tuple[int, str, int, int]]:
 def _release_sections(text: str, level: int):
     """Keep original bodies plus comment-masked bodies for validation."""
     visible = "".join(line for line, _, _ in _release_lines(text))
-    headings = [heading for heading in _release_headings(text) if heading[0] == level]
-    for index, (_, title, _, start) in enumerate(headings):
+    headings = [heading for heading in _release_headings(text) if heading[0] <= level]
+    for index, (heading_level, title, _, start) in enumerate(headings):
+        if heading_level != level:
+            continue
         end = headings[index + 1][2] if index + 1 < len(headings) else len(text)
         yield title, text[start:end].strip(), visible[start:end]
 
@@ -1120,6 +1124,27 @@ def _release_sections(text: str, level: int):
 def _release_has_guidance(text: str) -> bool:
     """Comments and empty fence markers cannot replace readable release guidance."""
     return any(line.strip() for line, _, guidance in _release_lines(text) if guidance)
+
+
+def _release_has_setext_heading(text: str) -> bool:
+    """Reject unsupported underlined headings within the selected ATX section."""
+    paragraph = False
+    for raw, (line, heading_allowed, _) in zip(io.StringIO(text), _release_lines(text)):
+        if not heading_allowed:
+            paragraph = False
+            continue
+        if not line.strip() and raw.strip():
+            # Hidden comment lines cannot make an ambiguous underline harmless.
+            continue
+        if re.fullmatch(r" {0,3}(?:=+|-+)[ \t]*(?:\r?\n)?", line):
+            if paragraph:
+                return True
+            paragraph = False
+        else:
+            paragraph = bool(line.strip()) and not re.match(
+                r" {0,3}#{1,6}(?:[ \t\r\n]|$)", line
+            )
+    return False
 
 
 # pylint: disable-next=too-many-arguments
@@ -1171,6 +1196,10 @@ def release_notes(gh: GitHub, tag: str, sha: str, provenance: str) -> str:
         "Release needs one nonempty changelog section",
     )
     notes, visible_notes = matches[0]
+    require(
+        not _release_has_setext_heading(notes),
+        "Release note sections must use ATX headings, not Setext underlines",
+    )
     sections = list(_release_sections(visible_notes, 3))
     for heading in ("Upgrade", "Security"):
         section = next((body for title, _, body in sections if title == heading), None)
