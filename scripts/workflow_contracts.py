@@ -15,11 +15,13 @@ from pathlib import Path
 import yaml
 
 
-def validate_codeql(workflows):
-    """Every CodeQL job shares a single immutable action version."""
-    for filename, workflow in workflows.items():
-        for name, job in workflow.get("jobs", {}).items():
-            pins = {
+COMMIT_SHA_PATTERN = r"[0-9a-f]{40}"
+QUALITY_GATE = "quality-gate.yml"
+
+
+def codeql_pins(job):
+    """Read the analyzer action references recognized by this validator."""
+    return {
                 step["uses"].rsplit("@", 1)[-1]
                 for step in job.get("steps", [])
                 if re.match(
@@ -27,8 +29,15 @@ def validate_codeql(workflows):
                     step.get("uses", ""),
                 )
             }
+
+
+def validate_codeql(workflows):
+    """Every CodeQL job shares a single immutable action version."""
+    for filename, workflow in workflows.items():
+        for name, job in workflow.get("jobs", {}).items():
+            pins = codeql_pins(job)
             if len(pins) > 1 or any(
-                not re.fullmatch(r"[0-9a-f]{40}", pin) for pin in pins
+                not re.fullmatch(COMMIT_SHA_PATTERN, pin) for pin in pins
             ):
                 raise ValueError(
                     f"{filename}/{name}: CodeQL actions must share one full commit SHA"
@@ -77,10 +86,10 @@ def validate(directory: Path) -> None:
             "pull_request" in workflow.get("on", {})
             and filename not in visited
             and filename
-            not in {"quality-gate.yml", "auto-approve.yml", "auto-merge.yml"}
+            not in {QUALITY_GATE, "auto-approve.yml", "auto-merge.yml"}
         ):
             raise ValueError(f"{filename}: PR validator is outside the required gate")
-    gate = workflows["quality-gate.yml"]["jobs"]
+    gate = workflows[QUALITY_GATE]["jobs"]
     expected = {
         f"./.github/workflows/{filename}" for filename in policy["validation_workflows"]
     }

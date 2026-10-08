@@ -59,3 +59,9 @@ The live assessment, when created, is the source of truth for the badge level. U
 ## Release-note source
 
 [CHANGELOG.md](../CHANGELOG.md) contains the current development line's change summary, upgrade impact and security notes. The release policy opts into commit-pinned notes; publication rejects missing or incomplete current-version sections. Historical release bodies still require a separate audit before claiming complete coverage.
+
+The October 2026 maintenance imports the release identity and metadata parser
+from `venus-os-ci-toolkit` revision `9dd211a`, including bounded TOML parsing and
+source-bound release-note validation. Consumer release-contract suites verify
+the imported engine. Workflow-validator refactoring preserves this repository's
+existing policy; it does not imply all newer toolkit workflow guarantees are enabled.

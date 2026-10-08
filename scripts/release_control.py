@@ -20,7 +20,9 @@ import json
 import os
 import re
 import stat
-import subprocess
+
+# Subprocess calls below use argument vectors with shell=False.
+import subprocess  # nosec B404
 import sys
 import tempfile
 import time
@@ -64,6 +66,7 @@ API_PATHS = {
     "PATCH": (r"releases/[1-9]\d*",),
     "PUT": (r"contents/release-version-state\.json",),
 }
+SHA256_PATTERN = r"[0-9a-f]{64}"
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}\Z")
 REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
@@ -212,7 +215,8 @@ class GitHub:
             and bool(os.environ.get("GH_TOKEN")),
             "Publication token is missing or its permission probe is not enabled",
         )
-        result = subprocess.run(
+        # Developer/CI toolchain selected by the invoking operator via PATH.
+        result = subprocess.run(  # nosec B603, B607
             [
                 "gh",
                 "api",
@@ -306,7 +310,8 @@ class GitHub:
             "PUT": ["--method", "PUT"],
         }[method]
         return self.response(
-            subprocess.run(
+            # Developer/CI toolchain selected by the invoking operator via PATH.
+            subprocess.run(  # nosec B603, B607
                 [
                     "gh",
                     "api",
@@ -370,7 +375,8 @@ class GitHub:
         )
         endpoint = f"{self.base}/{path}"
         try:
-            result = subprocess.run(
+            # Developer/CI toolchain selected by the invoking operator via PATH.
+            result = subprocess.run(  # nosec B603, B607
                 [
                     "gh",
                     "api",
@@ -413,7 +419,8 @@ class GitHub:
             "Upload must come from the private release staging directory",
         )
         self.response(
-            subprocess.run(
+            # Developer/CI toolchain selected by the invoking operator via PATH.
+            subprocess.run(  # nosec B603, B607
                 [
                     "gh",
                     "release",
@@ -520,7 +527,7 @@ def validate_policy_snapshot(snapshot: object, repo: str) -> None:
         isinstance(snapshot.get("git_blob_sha"), str)
         and SHA_RE.fullmatch(snapshot["git_blob_sha"])
         and isinstance(snapshot.get("sha256"), str)
-        and re.fullmatch(r"[0-9a-f]{64}", snapshot["sha256"]),
+        and re.fullmatch(SHA256_PATTERN, snapshot["sha256"]),
         "Invalid source policy snapshot hashes",
     )
     require_release_policy(snapshot.get("data"), repo, qualified=True)
@@ -541,7 +548,8 @@ def check_ancestry(gh: GitHub, sha: str, default_branch: str) -> None:
 
 def checked_out_sha() -> str:
     """Return the exact local commit used by the publication process."""
-    result = subprocess.run(
+    # Developer/CI toolchain selected by the invoking operator via PATH.
+    result = subprocess.run(  # nosec B603, B607
         ["git", "rev-parse", "HEAD"], text=True, capture_output=True, check=False
     )
     require(result.returncode == 0, "Must run from the checked-out release repository")
@@ -1049,7 +1057,9 @@ def release_notes(gh: GitHub, tag: str, sha: str, provenance: str) -> str:
             section.split("\n", 1)[0],
         )
     ]
-    require(len(matches) == 1 and matches[0], "Release needs one nonempty changelog section")
+    require(
+        len(matches) == 1 and matches[0], "Release needs one nonempty changelog section"
+    )
     notes = matches[0]
     for heading in ("Upgrade", "Security"):
         section = re.search(
@@ -1057,7 +1067,10 @@ def release_notes(gh: GitHub, tag: str, sha: str, provenance: str) -> str:
             notes,
             re.MULTILINE | re.DOTALL,
         )
-        require(section and section.group(1).strip(), f"Release notes need {heading} guidance")
+        require(
+            section and section.group(1).strip(),
+            f"Release notes need {heading} guidance",
+        )
     body = f"## Changes in {base_version}\n\n{notes}\n\n## Build provenance\n\n{provenance}"
     require(len(body.encode("utf-8")) <= 125_000, "Release notes are too large")
     return body
@@ -1333,7 +1346,7 @@ def validate_manifest(
             and re.fullmatch(rf"v{re.escape(base_version)}-rc\.[1-9]\d*", parent["tag"])
             and parent["source_sha"] == manifest["source_sha"]
             and isinstance(parent["manifest_sha256"], str)
-            and re.fullmatch(r"[0-9a-f]{64}", parent["manifest_sha256"]),
+            and re.fullmatch(SHA256_PATTERN, parent["manifest_sha256"]),
             "Invalid final RC provenance",
         )
         require(
@@ -1362,7 +1375,7 @@ def validate_manifest(
         )
         require(
             isinstance(item.get("sha256"), str)
-            and re.fullmatch(r"[0-9a-f]{64}", item["sha256"]),
+            and re.fullmatch(SHA256_PATTERN, item["sha256"]),
             "Invalid asset checksum",
         )
     return manifest
