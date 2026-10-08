@@ -24,6 +24,10 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: test
         run: cargo test --locked --all-targets
+      - name: Build and smoke test the immutable container
+        run: |
+          docker build --tag inverter-gateway:ci .
+          docker run --rm --network none inverter-gateway:ci --version
     timeout-minutes: 30
 
   dependency-audit:
