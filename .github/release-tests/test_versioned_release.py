@@ -448,12 +448,8 @@ class AllocationTests(unittest.TestCase):
     def test_branch_creation_and_cas_requests_use_real_narrow_client(self):
         client = state.StateGitHub(REPO)
         responses = [
-            subprocess.CompletedProcess(
-                [], 0, b'{"ref":"refs/heads/release-version-state"}', b""
-            ),
-            subprocess.CompletedProcess(
-                [], 0, b'{"content":{"sha":"' + SHA.encode() + b'"}}', b""
-            ),
+            legacy_tests.http_response(stdout=b'{"ref":"refs/heads/release-version-state"}'),
+            legacy_tests.http_response(stdout=b'{"content":{"sha":"' + SHA.encode() + b'"}}'),
         ]
         with patch.object(state.subprocess, "run", side_effect=responses) as run:
             client.api(
