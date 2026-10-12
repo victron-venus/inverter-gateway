@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.2] - Development line
+
+### Changes
+
+- Reuse fresh telemetry when deciding command availability, avoiding unnecessary state copies.
+- Replace the unmaintained PEM parser and refresh compatible dependencies.
+- Stop packaging on a binary-version mismatch, preserve reviewed release notes, and read release API status from HTTP headers.
+- Refresh shared CI actions, Sonar coverage for release helpers, and the optional runner reserve; GitHub-hosted runners remain the default.
+
+### Upgrade
+
+No configuration or data migration is introduced. Retain the existing MQTT and HTTPS credentials. This candidate still requires independent validation against the intended equipment before production use.
+
 ## [0.4.1] - Development line
 
 ### Release overview
