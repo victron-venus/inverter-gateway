@@ -13,6 +13,10 @@
 
 No configuration or data migration is introduced. Retain the existing MQTT and HTTPS credentials. This candidate still requires independent validation against the intended equipment before production use.
 
+### Security
+
+Replace the unmaintained PEM parser and retain pinned CI dependencies. MQTT and HTTPS authentication requirements remain unchanged; keep credentials outside published artifacts and maintain network isolation and independent equipment safeguards.
+
 ## [0.4.1] - Development line
 
 ### Release overview
