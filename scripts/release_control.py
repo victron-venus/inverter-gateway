@@ -186,6 +186,18 @@ def parse_json(data: bytes, label: str) -> object:
         raise ReleaseError(f"Invalid JSON in {label}") from exc
 
 
+def github_http_status(stderr: bytes) -> bytes | None:
+    """Read an unambiguous CLI status, never a number embedded in its message."""
+    # JSON errors end with (HTTP NNN); non-JSON errors start with HTTP NNN.
+    # Conflicting diagnostics cannot prove either absence or retryability.
+    statuses = set(re.findall(
+        rb"(?m)^gh: HTTP (\d{3})(?::[^\r\n]*|[ \t]*)\r?$", stderr
+    ) + re.findall(
+        rb"(?m)^gh: [^\r\n]* \(HTTP (\d{3})\)\r?$", stderr
+    ))
+    return next(iter(statuses)) if len(statuses) == 1 else None
+
+
 class GitHub:
     """Access one repository through argument-safe gh subprocess calls."""
 
@@ -260,9 +272,10 @@ class GitHub:
     def response(result: subprocess.CompletedProcess, operation: str = "") -> bytes:
         """Translate a completed fixed-form command without retrying failed writes."""
         if result.returncode:
-            message = result.stderr.decode(errors="replace").strip()
+            stderr = result.stderr or b""
+            message = stderr.decode(errors="replace").strip()
             context = f"{operation}: " if operation else ""
-            raise GitHubError(context + message, "HTTP 404" in message)
+            raise GitHubError(context + message, github_http_status(stderr) == b"404")
         return result.stdout
 
     def request(self, path: str, method="GET", body=None, mode="json") -> bytes:
