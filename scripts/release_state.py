@@ -40,25 +40,27 @@ class StateGitHub(rc.GitHub):
                 set(body) <= {"branch", "content", "message", "sha"},
                 "Invalid ledger write",
             )
+        result = subprocess.run(  # nosec B603, B607
+            [
+                "gh",
+                "api",
+                "--hostname",
+                "github.com",
+                "--include",
+                "--method",
+                method,
+                *(["--input", "-"] if body else []),
+                "--",
+                f"{self.base}/{path}",
+            ],
+            input=rc.json_bytes(body) if body else None,
+            capture_output=True,
+            check=False,
+        )
         return self.response(
-            # Developer/CI toolchain selected by the invoking operator via PATH.
-            subprocess.run(  # nosec B603, B607
-                [
-                    "gh",
-                    "api",
-                    "--hostname",
-                    "github.com",
-                    "--method",
-                    method,
-                    *(["--input", "-"] if body else []),
-                    "--",
-                    f"{self.base}/{path}",
-                ],
-                input=rc.json_bytes(body) if body else None,
-                capture_output=True,
-                check=False,
-            ),
+            result,
             f"{method} {self.base}/{path}",
+            rc.github_http_response(result.stdout),
         )
 
 

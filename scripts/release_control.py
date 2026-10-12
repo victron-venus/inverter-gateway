@@ -186,6 +186,61 @@ def parse_json(data: bytes, label: str) -> object:
         raise ReleaseError(f"Invalid JSON in {label}") from exc
 
 
+def github_http_response(stdout: bytes, paginated: bool = False) -> tuple[int, bytes]:
+    """Decode protocol headers emitted by gh --include, never its error prose.
+
+    Paginated API metadata uses --jq tojson to frame each successful JSON page.
+    gh normalizes those server-generated objects (including duplicate keys);
+    nonpaginated bodies retain their exact bytes and strict JSON validation.
+    """
+    def read_head(data: bytes) -> tuple[int, bytes]:
+        separator = re.search(rb"\r?\n\r?\n", data)
+        if separator is None:
+            raise GitHubError("GitHub response headers are missing or truncated")
+        lines = data[:separator.start()].splitlines()
+        status = re.fullmatch(
+            rb"HTTP/(?:1\.[01]|2(?:\.0)?) ([1-5]\d{2})(?: [^\r\n]*)?", lines[0]
+        ) if lines else None
+        if status is None or any(
+            not re.fullmatch(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+:[^\r\n]*", line)
+            for line in lines[1:]
+        ):
+            raise GitHubError("GitHub response headers are invalid")
+        return int(status.group(1)), data[separator.end():]
+
+    status, body = read_head(stdout)
+    if not paginated:
+        return status, body
+    pages: list[object] = []
+    # Decode once: page boundaries are character offsets, including non-ASCII
+    # JSON. Surrogate escapes preserve a later arbitrary error body unchanged.
+    text = body.decode("utf-8", errors="surrogateescape")
+    position = 0
+    decoder = json.JSONDecoder()
+    while 200 <= status < 300:
+        while position < len(text) and text[position] in " \t\r\n":
+            position += 1
+        try:
+            _, end = decoder.raw_decode(text, position)
+            page_bytes = text[position:end].encode("utf-8", errors="surrogateescape")
+            pages.append(parse_json(page_bytes, "GitHub response page"))
+        except (ValueError, ReleaseError) as error:
+            raise GitHubError("GitHub response page is invalid or truncated") from error
+        position = end
+        while position < len(text) and text[position] in " \t\r\n":
+            position += 1
+        if position == len(text):
+            return status, json_bytes(pages)
+        separator = re.compile(r"\r?\n\r?\n").search(text, position)
+        if separator is None:
+            raise GitHubError("GitHub response headers are missing or truncated")
+        header = text[position:separator.end()].encode("utf-8", errors="surrogateescape")
+        status, _ = read_head(header)
+        position = separator.end()
+    # A failed page invalidates every preceding page from the same attempt.
+    return status, b""
+
+
 class GitHub:
     """Access one repository through argument-safe gh subprocess calls."""
 
@@ -257,13 +312,20 @@ class GitHub:
         self.workflow_scope_verified = True
 
     @staticmethod
-    def response(result: subprocess.CompletedProcess, operation: str = "") -> bytes:
+    def response(
+        result: subprocess.CompletedProcess[bytes], operation: str = "",
+        http: tuple[int, bytes] | None = None,
+    ) -> bytes:
         """Translate a completed fixed-form command without retrying failed writes."""
+        status, body = http if http is not None else (None, result.stdout or b"")
+        context = f"{operation}: " if operation else ""
+        if status is not None and (result.returncode == 0) != (200 <= status < 300):
+            raise GitHubError(context + "GitHub HTTP status and CLI result disagree")
         if result.returncode:
-            message = result.stderr.decode(errors="replace").strip()
-            context = f"{operation}: " if operation else ""
-            raise GitHubError(context + message, "HTTP 404" in message)
-        return result.stdout
+            stderr = result.stderr or b""
+            message = stderr.decode(errors="replace").strip()
+            raise GitHubError(context + message, status == 404)
+        return body
 
     def request(self, path: str, method="GET", body=None, mode="json") -> bytes:
         """Call only allowed REST routes with fixed flags and one positional endpoint."""
@@ -289,7 +351,7 @@ class GitHub:
             )
         modes = {
             "json": [],
-            "pages": ["--paginate", "--slurp"],
+            "pages": ["--paginate", "--jq", "tojson"],
             "asset": ["-H", "Accept: application/octet-stream"],
         }
         require(
@@ -304,25 +366,22 @@ class GitHub:
             "PATCH": ["--method", "PATCH"],
             "PUT": ["--method", "PUT"],
         }[method]
+        command = [
+            "gh", "api", "--hostname", GITHUB_HOSTNAME, "--include",
+            *method_args, *modes[mode],
+            *(["--input", "-"] if body is not None else []),
+            "--", endpoint,
+        ]
+        # Developer/CI toolchain selected by the invoking operator via PATH.
+        result = subprocess.run(  # nosec B603
+            command,
+            input=json_bytes(body) if body is not None else None,
+            capture_output=True,
+            check=False,
+        )
         return self.response(
-            # Developer/CI toolchain selected by the invoking operator via PATH.
-            subprocess.run(  # nosec B603, B607
-                [
-                    "gh",
-                    "api",
-                    "--hostname",
-                    GITHUB_HOSTNAME,
-                    *method_args,
-                    *modes[mode],
-                    *(["--input", "-"] if body is not None else []),
-                    "--",
-                    endpoint,
-                ],
-                input=json_bytes(body) if body is not None else None,
-                capture_output=True,
-                check=False,
-            ),
-            f"{method} {endpoint}",
+            result, f"{method} {endpoint}",
+            github_http_response(result.stdout, mode == "pages"),
         )
 
     def api(self, path: str, method: str = "GET", body: dict | None = None):
