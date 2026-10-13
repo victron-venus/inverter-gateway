@@ -399,7 +399,8 @@ def detach(inputs, output, sidecar, policy, plan, expected_inputs=None):
         except OSError:
             for path in linked:
                 with suppress(OSError):
-                    if os.path.samestat(path.stat(), (staging / path.name).stat()):
+                    staged_path = staging / path.name
+                    if os.path.samestat(path.stat(), staged_path.stat()):
                         path.unlink()
             raise
     return {"image": output.name, "sidecar": sidecar.name, "source_sha": revision,

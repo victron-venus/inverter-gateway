@@ -591,6 +591,21 @@ def repository_info(gh: GitHub) -> JSONObject:
     return info
 
 
+def require_fuzzing_policy(policy: JSONObject) -> None:
+    """Validate an adopted fuzz policy without importing it for legacy policies."""
+    if "fuzzing" not in policy:
+        return
+    if __package__:
+        from .release_fuzz import configuration
+    else:
+        from release_fuzz import configuration
+
+    try:
+        configuration(policy)
+    except ValueError as error:
+        raise ReleaseError(str(error)) from error
+
+
 def require_release_policy(policy: object, repo: str, qualified: bool) -> None:
     """Check policy identity, release mode, and required eligibility blockers."""
     require(isinstance(policy, dict), "Source release policy must be an object")
@@ -601,16 +616,7 @@ def require_release_policy(policy: object, repo: str, qualified: bool) -> None:
         "Source policy repository mismatch",
     )
     require(policy.get("mode") == "release", "Source policy mode must be release")
-    if "fuzzing" in policy:
-        if __package__:
-            from .release_fuzz import configuration
-        else:
-            from release_fuzz import configuration
-
-        try:
-            configuration(policy)
-        except ValueError as error:
-            raise ReleaseError(str(error)) from error
+    require_fuzzing_policy(policy)
     if "channel_validation_workflows" in policy:
         if __package__:
             from .release_validation import channel_workflows

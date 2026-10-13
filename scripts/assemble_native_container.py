@@ -244,6 +244,15 @@ def verify_assembled_inputs(merged, builds):
         )
 
 
+def provenance_module():
+    """Load the optional provenance implementation in CLI and package imports."""
+    if __package__:
+        from . import release_provenance  # pylint: disable=import-outside-toplevel
+    else:
+        import release_provenance  # pylint: disable=import-outside-toplevel
+    return release_provenance
+
+
 def assemble(root: Path, directories: dict[str, Path], output: Path, evidence: Path):
     """Validate both native builds before preserving their blobs in a final archive."""
     root = root.resolve(strict=True)
@@ -283,11 +292,7 @@ def assemble(root: Path, directories: dict[str, Path], output: Path, evidence: P
     # explicitly opts into the signed detached-provenance contract.
     sidecar = None
     if policy.get("detached_provenance"):
-        if __package__:
-            from . import release_provenance  # pylint: disable=import-outside-toplevel
-        else:
-            import release_provenance  # pylint: disable=import-outside-toplevel
-
+        release_provenance = provenance_module()
         pairs = release_provenance.policy_pairs(policy)
         pair = next((item for item in pairs if item["image"] == output.name), None)
         if pair is not None:
