@@ -650,6 +650,29 @@ def validation_profile(policy: JSONObject, channel: str) -> JSONObject | None:
         raise ReleaseError(str(error)) from error
 
 
+def validate_fuzz_manifest(manifest: JSONObject, policy: JSONObject) -> None:
+    """Bind the optional fuzz profile and RC receipt to the immutable inventory."""
+    if "fuzzing" not in policy:
+        return
+    if __package__:
+        from .release_fuzz import profile
+    else:
+        from release_fuzz import profile
+
+    require(
+        json_bytes(manifest.get("fuzzing_profile")) == json_bytes(profile(policy, cast(str, manifest["channel"]))),
+        "Manifest fuzzing profile differs from its source policy/channel",
+    )
+    if manifest["channel"] == "rc":
+        assets = {item["name"]: item for item in cast(list[JSONObject], manifest["assets"])}
+        receipt = assets.get("release-inputs-fuzz.json", {})
+        require(
+            "fuzz-report.json" in assets and bool(receipt)
+            and manifest.get("validation_receipts") == [{"name": "release-inputs-fuzz.json", "sha256": receipt.get("sha256")}],
+            "RC fuzz validation evidence is absent from the immutable asset inventory",
+        )
+
+
 def validate_validation_manifest(manifest: JSONObject) -> None:
     """A candidate's profile must match the policy frozen at its source SHA."""
     policy = cast(JSONObject, cast(JSONObject, manifest["source_policy"])["data"])
@@ -658,24 +681,7 @@ def validate_validation_manifest(manifest: JSONObject) -> None:
         json_bytes(manifest.get("validation_profile")) == json_bytes(expected),
         "Manifest validation profile differs from its source policy/channel",
     )
-    if "fuzzing" in policy:
-        if __package__:
-            from .release_fuzz import profile
-        else:
-            from release_fuzz import profile
-
-        require(
-            json_bytes(manifest.get("fuzzing_profile")) == json_bytes(profile(policy, cast(str, manifest["channel"]))),
-            "Manifest fuzzing profile differs from its source policy/channel",
-        )
-        if manifest["channel"] == "rc":
-            assets = {item["name"]: item for item in cast(list[JSONObject], manifest["assets"])}
-            receipt = assets.get("release-inputs-fuzz.json", {})
-            require(
-                "fuzz-report.json" in assets and bool(receipt)
-                and manifest.get("validation_receipts") == [{"name": "release-inputs-fuzz.json", "sha256": receipt.get("sha256")}],
-                "RC fuzz validation evidence is absent from the immutable asset inventory",
-            )
+    validate_fuzz_manifest(manifest, policy)
 
 
 def require_current_fuzzing(gh: GitHub, candidate_policy: JSONObject, current_sha: str) -> None:
