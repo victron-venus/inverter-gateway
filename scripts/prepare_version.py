@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# Vendored release toolkit; change the toolkit source, then render again.
+# ruff: noqa
+# mypy: ignore-errors
+# pylint: skip-file
+# fmt: off
 """Prepare all owned base-version files together, optionally as a GitHub PR."""
 
 from __future__ import annotations
@@ -11,12 +16,17 @@ import re
 # Subprocess calls below use argument vectors with shell=False.
 import subprocess  # nosec B404
 import tempfile
+from collections.abc import Collection
 from pathlib import Path
+from typing import cast
 
-import version_plan
+if __package__:
+    from . import version_plan
+else:
+    import version_plan
 
 
-def run(root, *args, capture=True):
+def run(root: Path, *args: str, capture: bool = True) -> str:
     """Use argument arrays; release versions are data, never shell fragments."""
     # Repository-controlled argv; no shell interpolation or external command text.
     result = subprocess.run(  # nosec B603
@@ -29,18 +39,21 @@ def run(root, *args, capture=True):
     return result.stdout.strip() if capture else ""
 
 
-def source_policy(policy):
+def source_policy(policy: dict[str, object]) -> dict[str, object]:
     """Build counters belong to generated packages, not a base-version PR."""
     result = copy.deepcopy(policy)
-    result["versioning"]["files"] = [
+    cast(dict[str, object], result["versioning"])["files"] = [
         item
-        for item in result["versioning"]["files"]
+        for item in cast(
+            list[dict[str, object]],
+            cast(dict[str, object], result["versioning"])["files"],
+        )
         if item.get("value") not in {"build", "apple-build"}
     ]
     return result
 
 
-def _bumped_version(current, tags, bump):
+def _bumped_version(current: str, tags: Collection[str], bump: str) -> str:
     """Choose the requested bump while preserving an already prepared base."""
     values = [
         tuple(map(int, value[1:].split(".")))
@@ -63,13 +76,15 @@ def _bumped_version(current, tags, bump):
     return selected
 
 
-def _validate_preparation_checkout(root, policy):
+def _validate_preparation_checkout(
+    root: Path, policy: dict[str, object]
+) -> tuple[str, str, str]:
     """Require a clean checkout of the matching origin and current default branch."""
     if policy.get("mode") != "release":
         raise ValueError("Only release-mode products can prepare versions")
     if run(root, "git", "status", "--porcelain"):
         raise ValueError("Version preparation requires a clean checkout")
-    repo = policy.get("repository", "")
+    repo = cast(str, policy.get("repository", ""))
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("Preparation requires an explicit OWNER/REPO identity")
     for extra in ([], ["--push"]):
@@ -83,7 +98,7 @@ def _validate_preparation_checkout(root, policy):
             raise ValueError(
                 "Origin fetch/push identity differs from the release policy"
             )
-    branch = policy.get("default_branch", "main")
+    branch = cast(str, policy.get("default_branch", "main"))
     # Refresh the actual GitHub history; stale local tags cannot choose a version.
     run(root, "git", "fetch", "origin", branch, "--tags", capture=False)
     head = run(root, "git", "rev-parse", "HEAD")
@@ -93,7 +108,9 @@ def _validate_preparation_checkout(root, policy):
     return repo, branch, head
 
 
-def _preparation_topic(root, repo, branch, head, target):
+def _preparation_topic(
+    root: Path, repo: str, branch: str, head: str, target: str
+) -> tuple[str, list[dict[str, object]], str | None]:
     """Identify and verify an existing preparation branch before any write."""
     topic = f"release/version-{target}"
     listed = json.loads(
@@ -125,7 +142,14 @@ def _preparation_topic(root, repo, branch, head, target):
     return topic, existing, topic_sha
 
 
-def choose_version(current, tags, requested="", bump="next-patch", *, occupied=None):  # pylint: disable=too-many-branches
+def choose_version(
+    current: str,
+    tags: Collection[str],
+    requested: str = "",
+    bump: str = "next-patch",
+    *,
+    occupied: Collection[str] | None = None,
+) -> str:  # pylint: disable=too-many-branches
     """Use SemVer ordering and preserve an already prepared unreleased cycle."""
     if requested:
         if not version_plan.BASE.fullmatch(requested):
@@ -147,7 +171,7 @@ def choose_version(current, tags, requested="", bump="next-patch", *, occupied=N
     return selected
 
 
-def advertised_tags(root):
+def advertised_tags(root: Path) -> tuple[list[str], set[str]]:
     """Return reachable history plus all occupied names from the same remote read."""
     advertised = {}
     for line in run(
@@ -170,7 +194,7 @@ def advertised_tags(root):
     return result, set(advertised)
 
 
-def remote_topic(root, topic):
+def remote_topic(root: Path, topic: str) -> str | None:
     """Resolve and fetch exactly one remote preparation branch, if present."""
     ref = f"refs/heads/{topic}"
     lines = run(root, "git", "ls-remote", "--heads", "origin", ref).splitlines()
@@ -187,24 +211,24 @@ def remote_topic(root, topic):
     return sha
 
 
-def own_pull_requests(rows, topic, base):
+def own_pull_requests(rows: object, topic: str, base: str) -> list[dict[str, object]]:
     """A head-name query also returns fork PRs; retain only our exact branch."""
     version_plan.require(isinstance(rows, list), "Invalid preparation PR inventory")
-    result = []
-    for row in rows:
+    result: list[dict[str, object]] = []
+    for row in cast(list[object], rows):
         if not isinstance(row, dict) or type(row.get("isCrossRepository")) is not bool:  # pylint: disable=unidiomatic-typecheck
             raise ValueError("Preparation PR lacks repository identity")
         if row["isCrossRepository"]:
             continue
         if row.get("headRefName") != topic or row.get("baseRefName") != base:
             raise ValueError("Preparation PR branch identity differs from request")
-        result.append(row)
+        result.append(cast(dict[str, object], row))
     if len(result) > 1:
         raise ValueError("Multiple preparation PRs exist for one version")
     return result
 
 
-def verify_owned_topic(root, topic_sha, main_sha, target):  # pylint: disable=too-many-locals
+def verify_owned_topic(root: Path, topic_sha: str, main_sha: str, target: str) -> None:  # pylint: disable=too-many-locals
     """Reject any existing branch content beyond its declared version inputs."""
     ancestor = run(root, "git", "merge-base", topic_sha, main_sha)
     old_policy = json.loads(
@@ -215,7 +239,13 @@ def verify_owned_topic(root, topic_sha, main_sha, target):  # pylint: disable=to
     changed = set(
         run(root, "git", "diff", "--name-only", ancestor, topic_sha).splitlines()
     )
-    names = {item["path"] for item in editable["versioning"]["files"]}
+    names = {
+        cast(str, item["path"])
+        for item in cast(
+            list[dict[str, object]],
+            cast(dict[str, object], editable["versioning"])["files"],
+        )
+    }
     if not changed <= names:
         raise ValueError("Existing preparation branch contains unowned changes")
     plan = version_plan.create_plan(target, "stable", None, ancestor, editable)
@@ -253,7 +283,13 @@ def verify_owned_topic(root, topic_sha, main_sha, target):  # pylint: disable=to
                 )
 
 
-def prepare(root, requested="", bump="next-patch", pull_request=False, dry_run=False):  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+def prepare(
+    root: Path,
+    requested: str = "",
+    bump: str = "next-patch",
+    pull_request: bool = False,
+    dry_run: bool = False,
+) -> dict[str, object]:  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
     """Update declared files locally or create one reviewable preparation branch."""
     root = root.resolve()
     policy = json.loads((root / ".release-policy.json").read_text())
@@ -268,13 +304,21 @@ def prepare(root, requested="", bump="next-patch", pull_request=False, dry_run=F
         return {
             "version": target,
             "source_sha": head,
-            "files": sorted({item["path"] for item in editable["versioning"]["files"]}),
+            "files": sorted(
+                {
+                    cast(str, item["path"])
+                    for item in cast(
+                        list[dict[str, object]],
+                        cast(dict[str, object], editable["versioning"])["files"],
+                    )
+                }
+            ),
             "dry_run": True,
         }
     if not pull_request:
-        changed = version_plan.sync_versions(root, editable, plan)
+        changed_files = version_plan.sync_versions(root, editable, plan)
         version_plan.check_base_versions(root, editable, target)
-        return {"version": target, "files": changed}
+        return {"version": target, "files": changed_files}
     topic, existing, topic_sha = _preparation_topic(root, repo, branch, head, target)
     with tempfile.TemporaryDirectory(prefix="prepare-release-version-") as temp:
         checkout = Path(temp) / "checkout"
@@ -291,12 +335,18 @@ def prepare(root, requested="", bump="next-patch", pull_request=False, dry_run=F
         try:
             version_plan.sync_versions(checkout, editable, plan)
             version_plan.check_base_versions(checkout, editable, target)
-            names = sorted({item["path"] for item in editable["versioning"]["files"]})
+            names = {
+                cast(str, item["path"])
+                for item in cast(
+                    list[dict[str, object]],
+                    cast(dict[str, object], editable["versioning"])["files"],
+                )
+            }
             if not existing and not run(checkout, "git", "diff", "--name-only"):
                 return {"version": target, "unchanged": True}
             run(checkout, "git", "diff", "--check")
             changed = set(run(checkout, "git", "diff", "--name-only").splitlines())
-            if not changed <= set(names):
+            if not changed <= names:
                 raise ValueError("Preparation changed an unowned file")
             if changed:
                 run(checkout, "git", "add", "--", *sorted(changed), capture=False)
@@ -383,7 +433,7 @@ def prepare(root, requested="", bump="next-patch", pull_request=False, dry_run=F
             )
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
     """Parse the explicit local update or preparation-PR request."""
     # Each vendored CLI keeps its standalone argument parser.
     # pylint: disable=duplicate-code

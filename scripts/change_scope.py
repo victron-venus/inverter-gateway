@@ -15,7 +15,8 @@ import argparse
 import json
 import os
 import re
-import subprocess
+# Subprocess calls below use argument vectors with shell=False.
+import subprocess  # nosec B404
 import sys
 from pathlib import Path, PurePosixPath
 
@@ -180,7 +181,8 @@ def git(repo, operation, revision=""):
     else:
         raise ValueError("Unsupported Git read operation")
     environment = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_NO_REPLACE_OBJECTS="1")
-    return subprocess.run(
+    # Repository-controlled argv; no shell interpolation or external command text.
+    return subprocess.run(  # nosec B603
         arguments,
         cwd=directory,
         check=True,

@@ -42,6 +42,7 @@ store, service, and production deployment acceptance remain separate checks.
 
 - `Cargo.lock`
 - `Cargo.toml`
+- `fuzz/Cargo.lock`
 
 OCI builds set `org.opencontainers.image.version` from the checked package projection
 and `org.opencontainers.image.revision` from the source commit. Publication verifies

@@ -19,13 +19,22 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from publish_verified import verified_assets, verified_publication_config
-from release_control import (
-    GitHub,
-    ReleaseError,
-    digest,
-    require,
-)
+if __package__:
+    from .publish_verified import verified_assets, verified_publication_config
+    from .release_control import (
+        GitHub,
+        ReleaseError,
+        digest,
+        require,
+    )
+else:
+    from publish_verified import verified_assets, verified_publication_config
+    from release_control import (
+        GitHub,
+        ReleaseError,
+        digest,
+        require,
+    )
 
 ROOT = Path(__file__).resolve().parents[1]
 

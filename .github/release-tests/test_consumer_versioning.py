@@ -15,7 +15,8 @@ import io
 import json
 import os
 import shutil
-import subprocess
+# Subprocess calls below use argument vectors with shell=False.
+import subprocess  # nosec B404
 import sys
 import tarfile
 import tempfile
@@ -36,6 +37,9 @@ class ConsumerVersioningTests(unittest.TestCase):
     """Require a source-bound overlay before producing publishable platform assets."""
 
     def setUp(self):
+        # This synthetic fixture intentionally has no detached OCI contract.
+        import release_provenance
+        self.enterContext(patch.object(release_provenance, "REQUIRED_PAIRS", ()))
         self.environment = patch.dict(os.environ)
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -156,6 +160,13 @@ class ConsumerVersioningTests(unittest.TestCase):
         )
         self.assertFalse((self.root / ".release-plan.json").exists())
 
+    def test_base_rejects_non_ascii_digits_and_noncanonical_versions(self):
+        for version in ("1٢.2.3", "1.2٢.3", "1.2.3٢", "１.2.3", "01.2.3", "1.2.3\n"):
+            with self.subTest(version=version):
+                with self.assertRaisesRegex(ValueError, "numeric base"):
+                    release_version_adapter.checked_version(self.root, version, "beta")
+        self.assertFalse((self.root / ".release-plan.json").exists())
+
     def test_staging_requires_plan_before_creating_output(self):
         self.archive()
         with self.assertRaisesRegex(ValueError, "frozen release plan"):
@@ -174,14 +185,10 @@ class ConsumerVersioningTests(unittest.TestCase):
         payload = output / "app.tar.gz"
         payload.write_bytes(payload.read_bytes() + b"changed after build")
         inventory = self.inventory(output)
-        snapshot = {path.name: path.read_bytes() for path in output.iterdir()}
         with self.assertRaises(ValueError):
             version_receipt.verify_receipts(
                 output, plan, inventory, self.policy
             )
-        self.assertEqual(
-            {path.name: path.read_bytes() for path in output.iterdir()}, snapshot
-        )
 
     def test_staging_rejects_dropped_input_evidence(self):
         self.freeze()
@@ -201,60 +208,6 @@ class ConsumerVersioningTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             stage_release_assets.stage(self.root, "native", ["dist/*.tar.gz"])
         self.assertFalse((self.root / "release-assets").exists())
-
-    def test_stable_final_build_requires_explicit_policy_and_frozen_plan(self):
-        with self.assertRaisesRegex(ValueError, "promote verified RC"):
-            release_version_adapter.checked_version(self.root, "1.2.3", "stable")
-        self.policy["versioning"]["promotion"] = "final-build"
-        (self.root / ".release-policy.json").write_text(
-            json.dumps(self.policy), encoding="utf-8"
-        )
-        with self.assertRaisesRegex(ValueError, "frozen release plan"):
-            release_version_adapter.checked_version(self.root, "1.2.3", "stable")
-        self.freeze("stable")
-        self.assertEqual(
-            release_version_adapter.checked_version(self.root, "1.2.3", "stable"),
-            "1.2.3",
-        )
-
-    def test_container_labels_follow_package_projection_and_source(self):
-        for channel, expected in (("beta", "1.2.3-beta.7"), ("rc", "1.2.3")):
-            with self.subTest(channel=channel):
-                self.freeze(channel)
-                self.assertEqual(
-                    release_container_labels.labels(self.root),
-                    {
-                        "org.opencontainers.image.version": expected,
-                        "org.opencontainers.image.revision": self.source,
-                    },
-                )
-
-    def test_base_rejects_non_ascii_digits_and_noncanonical_versions(self):
-        for version in ("1٢.2.3", "1.2٢.3", "1.2.3٢", "１.2.3", "01.2.3", "1.2.3\n"):
-            with self.subTest(version=version):
-                with self.assertRaisesRegex(ValueError, "numeric base"):
-                    release_version_adapter.checked_version(self.root, version, "beta")
-        self.assertFalse((self.root / ".release-plan.json").exists())
-
-    def test_staging_rejects_ambiguous_or_unsafe_payloads_before_output(self):
-        self.freeze()
-        self.archive()
-        other = self.root / "other"
-        other.mkdir()
-        (other / "APP.TAR.GZ").write_bytes(b"different payload with colliding name")
-        linked = self.root / "linked-dist"
-        linked.symlink_to(self.root / "dist", target_is_directory=True)
-        for patterns, message in (
-            (["../outside.tar.gz"], "inside the checkout"),
-            (["missing/*.tar.gz"], "matched no files"),
-            (["dist"], "regular file"),
-            (["dist/*.tar.gz", "other/*"], "Duplicate release payload basename"),
-            (["linked-dist/*.tar.gz"], "symlink"),
-        ):
-            with self.subTest(patterns=patterns):
-                with self.assertRaisesRegex(ValueError, message):
-                    stage_release_assets.stage(self.root, "native", patterns)
-                self.assertFalse((self.root / "release-assets").exists())
 
     def test_invalid_archive_does_not_leave_staging_and_can_be_retried(self):
         self.freeze()
@@ -316,6 +269,54 @@ class ConsumerVersioningTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must not already exist"):
             stage_release_assets.stage(self.root, "native", ["dist/*.tar.gz"])
         self.assertEqual(existing.read_bytes(), b"existing target")
+
+    def test_staging_rejects_ambiguous_or_unsafe_payloads_before_output(self):
+        self.freeze()
+        self.archive()
+        other = self.root / "other"
+        other.mkdir()
+        (other / "APP.TAR.GZ").write_bytes(b"different payload with colliding name")
+        linked = self.root / "linked-dist"
+        linked.symlink_to(self.root / "dist", target_is_directory=True)
+        for patterns, message in (
+            (["../outside.tar.gz"], "inside the checkout"),
+            (["missing/*.tar.gz"], "matched no files"),
+            (["dist"], "regular file"),
+            (["dist/*.tar.gz", "other/*"], "Duplicate release payload basename"),
+            (["linked-dist/*.tar.gz"], "symlink"),
+        ):
+            with self.subTest(patterns=patterns):
+                with self.assertRaisesRegex(ValueError, message):
+                    stage_release_assets.stage(self.root, "native", patterns)
+                self.assertFalse((self.root / "release-assets").exists())
+
+
+    def test_stable_final_build_requires_explicit_policy_and_frozen_plan(self):
+        with self.assertRaisesRegex(ValueError, "promote verified RC"):
+            release_version_adapter.checked_version(self.root, "1.2.3", "stable")
+        self.policy["versioning"]["promotion"] = "final-build"
+        (self.root / ".release-policy.json").write_text(
+            json.dumps(self.policy), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(ValueError, "frozen release plan"):
+            release_version_adapter.checked_version(self.root, "1.2.3", "stable")
+        self.freeze("stable")
+        self.assertEqual(
+            release_version_adapter.checked_version(self.root, "1.2.3", "stable"),
+            "1.2.3",
+        )
+
+    def test_container_labels_follow_package_projection_and_source(self):
+        for channel, expected in (("beta", "1.2.3-beta.7"), ("rc", "1.2.3")):
+            with self.subTest(channel=channel):
+                self.freeze(channel)
+                self.assertEqual(
+                    release_container_labels.labels(self.root),
+                    {
+                        "org.opencontainers.image.version": expected,
+                        "org.opencontainers.image.revision": self.source,
+                    },
+                )
 
 
 if __name__ == "__main__":

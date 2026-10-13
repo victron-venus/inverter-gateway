@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# Vendored release toolkit; change the toolkit source, then render again.
+# ruff: noqa
+# mypy: ignore-errors
+# pylint: skip-file
+# fmt: off
 """Stage only declared final upload files and bind them to frozen version inputs."""
 
 from __future__ import annotations
@@ -16,10 +21,17 @@ import shutil
 import subprocess  # nosec B404
 import sys
 from pathlib import Path
+from typing import cast
 
-import version_plan
-from release_version_adapter import resolve_plan_path
+if __package__:
+    from . import version_plan
+    from .release_version_adapter import resolve_plan_path
+else:
+    import version_plan
+    from release_version_adapter import resolve_plan_path
 
+
+DETACHED_PROVENANCE_REQUIRED = False
 
 def checked_payload_path(root: Path, matched: str) -> Path:
     """Reject payload paths that escape the checkout or contain symlinks."""
@@ -54,28 +66,46 @@ def collect_payloads(root: Path, patterns: list[str]) -> dict[str, Path]:
     return files
 
 
-def verify_staged_inputs(root: Path, policy: dict, inputs: dict) -> None:
+def verify_staged_inputs(
+    root: Path, policy: dict[str, object], inputs: dict[str, object]
+) -> None:
     """Check complete version-source coverage and unchanged prepared bytes."""
-    declared_paths = {item["path"] for item in policy["versioning"]["files"]}
-    input_paths = [item["path"] for item in inputs["files"]]
+    declared_paths = {
+        item["path"]
+        for item in cast(
+            list[dict[str, object]],
+            cast(dict[str, object], policy["versioning"])["files"],
+        )
+    }
+    input_paths = [
+        item["path"] for item in cast(list[dict[str, object]], inputs["files"])
+    ]
     if len(set(input_paths)) != len(input_paths) or set(input_paths) != declared_paths:
         raise ValueError(
             "Build inputs must cover every declared version source exactly once"
         )
-    for entry in inputs["files"]:
-        current = root / entry["path"]
+    for entry in cast(list[dict[str, object]], inputs["files"]):
+        current = root / cast(str, entry["path"])
         if hashlib.sha256(current.read_bytes()).hexdigest() != entry["after_sha256"]:
             raise ValueError(
                 f"Version input changed after plan preparation: {entry['path']}"
             )
 
 
-def inspect_staged_artifacts(output, files, policy, identity) -> list[dict]:
+def inspect_staged_artifacts(
+    output: Path,
+    files: dict[str, Path],
+    policy: dict[str, object],
+    identity: dict[str, object],
+) -> list[dict[str, object]]:
     """Inspect the declared metadata only after payloads and inputs are checked."""
     metadata = []
-    for declaration in policy["versioning"].get("artifacts", []):
+    for declaration in cast(
+        list[dict[str, object]],
+        cast(dict[str, object], policy["versioning"]).get("artifacts", []),
+    ):
         for path in files.values():
-            if fnmatch.fnmatchcase(path.name, declaration["path"]):
+            if fnmatch.fnmatchcase(path.name, cast(str, declaration["path"])):
                 inspected = version_plan.verify_artifact(
                     output / path.name, declaration, identity
                 )
@@ -84,10 +114,24 @@ def inspect_staged_artifacts(output, files, policy, identity) -> list[dict]:
     return metadata
 
 
-def write_staged_files(root, output, files, policy, identity, plan) -> None:
+def write_staged_files(
+    root: Path,
+    output: Path,
+    files: dict[str, Path],
+    policy: dict[str, object],
+    identity: dict[str, object],
+    plan: Path,
+) -> None:
     """Copy checked inputs and write the receipt into our new target directory."""
     for path in files.values():
         shutil.copy2(path, output / path.name)
+    if DETACHED_PROVENANCE_REQUIRED or policy.get("detached_provenance"):
+        if __package__:
+            from .release_provenance import verify_staged  # pylint: disable=import-outside-toplevel
+        else:
+            from release_provenance import verify_staged  # pylint: disable=import-outside-toplevel
+
+        verify_staged(output, policy, identity)
     metadata = inspect_staged_artifacts(output, files, policy, identity)
     receipt = output / f"release-inputs-{output.name}.json"
     # Repository-controlled argv; no shell interpolation or external command text.
