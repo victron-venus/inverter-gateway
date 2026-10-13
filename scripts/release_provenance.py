@@ -115,8 +115,8 @@ def read_sidecar(path, expected=None):
     return document(raw)
 
 
-def decode(encoded, budget):
-    require(isinstance(encoded, str) and len(encoded) <= 4 * ((oci.MAX_JSON + 2) // 3),
+def decode(encoded, budget, *, max_bytes=oci.MAX_JSON):
+    require(isinstance(encoded, str) and len(encoded) <= 4 * ((max_bytes + 2) // 3),
             "Oversized encoded provenance blob")
     require(budget[0] + (len(encoded) // 4) * 3 - encoded.count("=") <= oci.MAX_JSON_TOTAL,
             "Too much decoded provenance metadata")
@@ -124,7 +124,7 @@ def decode(encoded, budget):
         raw = base64.b64decode(encoded, validate=True)
     except ValueError as error:
         raise ValueError("Invalid provenance base64") from error
-    require(base64.b64encode(raw).decode() == encoded and 0 < len(raw) <= oci.MAX_JSON,
+    require(base64.b64encode(raw).decode() == encoded and 0 < len(raw) <= max_bytes,
             "Noncanonical or oversized provenance blob")
     budget[0] += len(raw)
     require(budget[0] <= oci.MAX_JSON_TOTAL, "Too much decoded provenance metadata")
@@ -198,6 +198,7 @@ class EvidenceArchive(oci.Archive):
         self.leaves, self.images, self.attestations = [], [], []
         self.visited, self.metadata_bytes, self.rootfs_bytes = 0, 0, 0
         self.metadata_names, self.layer_identities = set(), {}
+        self.attestation_names = set()
         for name, raw in metadata.items():
             entry = tarfile.TarInfo(name)
             entry.size = len(raw)
@@ -232,7 +233,9 @@ def verify_pair(directory, pair, plan, policy, expected=None):
     metadata, budget = {}, [0]
     for digest, encoded in data["blobs"].items():
         require(SHA.fullmatch(digest), "Invalid provenance blob digest")
-        raw = decode(encoded, budget)
+        # Blob roles are established by EvidenceArchive's graph replay below;
+        # it retains the smaller structural limit for every non-statement.
+        raw = decode(encoded, budget, max_bytes=oci.MAX_ATTESTATION_JSON)
         require(hashlib.sha256(raw).hexdigest() == digest, "Provenance blob digest mismatch")
         metadata[oci.BLOB_PREFIX + digest] = raw
     inputs = data["inputs"]
@@ -291,9 +294,10 @@ def verify_staged(directory, policy, plan):
 
 def read_raw(archive, name):
     entry = archive.members[name]
-    require(entry.size <= oci.MAX_JSON, "Oversized original metadata")
+    limit = oci.MAX_ATTESTATION_JSON if name in archive.attestation_names else oci.MAX_JSON
+    require(entry.size <= limit, "Oversized original metadata")
     with archive.tar.extractfile(entry) as stream:
-        raw = stream.read(oci.MAX_JSON + 1)
+        raw = stream.read(limit + 1)
     require(len(raw) == entry.size, "Truncated original metadata")
     return raw
 

@@ -13,7 +13,8 @@ import hashlib
 import os
 import re
 import stat
-import subprocess
+# Only a fixed read-only Git query is executed, with no shell.
+import subprocess  # nosec B404
 import tempfile
 from contextlib import ExitStack, suppress
 from pathlib import Path
@@ -261,7 +262,8 @@ def assemble(root: Path, directories: dict[str, Path], output: Path, evidence: P
     evidence = version_receipt.confined_cli_path(root, evidence, "new")
     require(output != evidence, "OCI and evidence destinations must differ")
     policy = document(root / ".release-policy.json")
-    source = subprocess.check_output(
+    # Fixed read-only Git query using the runner's selected toolchain.
+    source = subprocess.check_output(  # nosec B603, B607
         ["git", "rev-parse", "HEAD"], cwd=root, text=True
     ).strip()
     plan = version_plan.validate_plan(

@@ -64,12 +64,12 @@
         "value": "package"
       }
     ],
-    "toolkit_revision": "685054a71f85d5e4cd727791027cc8b61d6ad8f6"
+    "toolkit_revision": "5e413f80a4353d328b4529eae57992ac3987e2dd"
   },
   "single_entry_ci": true,
   "release_notes": "CHANGELOG.md",
-  "toolkit_revision": "685054a71f85d5e4cd727791027cc8b61d6ad8f6",
+  "toolkit_revision": "5e413f80a4353d328b4529eae57992ac3987e2dd",
   "fuzzing": {
-    "toolkit_ref": "685054a71f85d5e4cd727791027cc8b61d6ad8f6"
+    "toolkit_ref": "5e413f80a4353d328b4529eae57992ac3987e2dd"
   }
 }

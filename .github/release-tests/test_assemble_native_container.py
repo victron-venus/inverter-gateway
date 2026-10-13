@@ -11,7 +11,8 @@ import hashlib
 import io
 import json
 import os
-import subprocess
+# Tests invoke only fixed local fixture commands, never a shell.
+import subprocess  # nosec B404
 import sys
 import tarfile
 import tempfile
@@ -113,7 +114,8 @@ class NativeReceiptTests(unittest.TestCase):
             self.make_native(platform)
 
     def command(self, *args):
-        return subprocess.check_output(args, cwd=self.root, text=True)
+        # Callers supply explicit Git/Python fixture argv in a temporary checkout.
+        return subprocess.check_output(args, cwd=self.root, text=True)  # nosec B603
 
     def write(self, name, value):
         path = self.root / name

@@ -17,7 +17,8 @@ import argparse
 import fnmatch
 import json
 import re
-import subprocess
+# Publication uses fixed tool commands and verified inputs without a shell.
+import subprocess  # nosec B404
 import sys
 import tempfile
 from pathlib import Path
@@ -167,7 +168,8 @@ def verified_publication_config(policy, manifest, field):
 
 def require_unpublished_version(image, version):
     """Fail closed unless registry inventory proves the version is unpublished."""
-    check = subprocess.run(
+    # The caller validates the registry destination; skopeo receives one transport argument.
+    check = subprocess.run(  # nosec B603, B607
         ["skopeo", "list-tags", DOCKER_TRANSPORT + image],
         capture_output=True,
         text=True,
@@ -292,7 +294,8 @@ def main():
             )
             if args.execute:
                 for command in commands:
-                    subprocess.run(command, check=True)
+                    # Commands come only from the verified OCI/PyPI builders above.
+                    subprocess.run(command, check=True)  # nosec B603
         return 0
     except (
         ReleaseError,

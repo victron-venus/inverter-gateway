@@ -21,7 +21,8 @@ from pathlib import Path
 import re
 import shutil
 import signal
-import subprocess
+# Reviewed build and fuzz commands use argv arrays, never shell interpolation.
+import subprocess  # nosec B404
 import time
 
 MANIFEST = ".github/fuzz.json"
@@ -213,7 +214,8 @@ def execute(command: list[str], cwd: Path, output: Path, timeout: int, isolated:
                    "GOMEMLIMIT=1536MiB", executable, *command[1:]]
     start = time.monotonic()
     with output.open("wb") as log:
-        process = subprocess.Popen(command, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        # The default-branch manifest supplies reviewed argv; campaigns add network isolation.
+        process = subprocess.Popen(command, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)  # nosec B603
         try:
             code = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -254,7 +256,8 @@ def campaign(root: Path, output: Path) -> None:
     event_contract(event, os.environ["GITHUB_EVENT_NAME"], os.environ["GITHUB_REF"],
                    os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_SHA"])
     data = manifest(root)
-    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    # Fixed read-only Git query using the runner's selected toolchain.
+    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()  # nosec B603, B607
     if actual != os.environ["GITHUB_SHA"]:
         raise ValueError("Fuzz checkout differs from RC source")
     output.mkdir(parents=True, exist_ok=False)

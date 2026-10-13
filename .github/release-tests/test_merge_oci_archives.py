@@ -10,11 +10,13 @@ import hashlib
 import importlib.util
 import io
 import json
-import subprocess
+# Tests run the local Python interpreter with explicit fixture argv and no shell.
+import subprocess  # nosec B404
 import sys
 import tarfile
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
@@ -59,6 +61,7 @@ class MergeTest(unittest.TestCase):
         layer_content=None,
         layer_media="application/vnd.oci.image.layer.v1.tar",
         diff_id=None,
+        attestation_size=None,
     ):
         entries = {"oci-layout": b'{"imageLayoutVersion":"1.0.0"}'}
         layer = self.blob(
@@ -100,8 +103,7 @@ class MergeTest(unittest.TestCase):
         image["platform"] = {"os": "linux", "architecture": architecture}
         manifests = [image]
         if attestation:
-            statement = self.blob(
-                entries,
+            statement_raw = oci.canonical(
                 {
                     "_type": "https://in-toto.io/Statement/v1",
                     "subject": [
@@ -109,9 +111,11 @@ class MergeTest(unittest.TestCase):
                     ],
                     "predicateType": "https://slsa.dev/provenance/v1",
                     "predicate": {},
-                },
-                oci.IN_TOTO,
+                }
             )
+            if attestation_size is not None:
+                statement_raw = statement_raw.ljust(attestation_size, b" ")
+            statement = self.blob(entries, statement_raw, oci.IN_TOTO)
             data = {
                 "schemaVersion": 2,
                 "mediaType": oci.MANIFEST,
@@ -192,6 +196,48 @@ class MergeTest(unittest.TestCase):
         replacement = self.blob(entries, body, oci.MANIFEST)
         descriptor.update(replacement)
         entries["index.json"] = oci.canonical(root)
+
+    def test_attestation_size_boundary_preserves_raw_statement(self):
+        for kind in ("legacy", "artifact"):
+            with self.subTest(kind=kind):
+                entries = self.fixture("amd64", attestation=kind,
+                                       attestation_size=oci.MAX_ATTESTATION_JSON)
+                name = next(name for name, raw in entries.items()
+                            if len(raw) == oci.MAX_ATTESTATION_JSON)
+                output = self.root / f"{kind}.tar"
+                self.merge(self.inputs(amd64=entries), output)
+                self.assertEqual(self.load(output)[name], entries[name])
+        entries = self.fixture("amd64", attestation="artifact",
+                               attestation_size=oci.MAX_ATTESTATION_JSON + 1)
+        with self.assertRaisesRegex(ValueError, "oversized OCI metadata"):
+            self.merge(self.inputs(amd64=entries))
+        self.assertFalse(self.output.exists())
+
+    def test_structural_json_size_boundary_is_unchanged(self):
+        for name in ("oci-layout", "index.json"):
+            for extra in (0, 1):
+                with self.subTest(name=name, extra=extra):
+                    entries = self.fixture("amd64")
+                    entries[name] = entries[name].ljust(oci.MAX_JSON + extra, b" ")
+                    path = self.archive("boundary.tar", entries)
+                    with ExitStack() as stack:
+                        if extra:
+                            with self.assertRaisesRegex(ValueError, "oversized OCI metadata"):
+                                oci.Archive(path, "linux/amd64", VERSION, REVISION, stack)
+                        else:
+                            oci.Archive(path, "linux/amd64", VERSION, REVISION, stack)
+
+    def test_metadata_aggregate_size_boundary_is_unchanged(self):
+        path = self.archive("aggregate.tar", self.fixture("amd64"))
+        with ExitStack() as stack:
+            archive = oci.Archive(path, "linux/amd64", VERSION, REVISION, stack)
+            size = archive.members["oci-layout"].size
+            archive.metadata_bytes = oci.MAX_JSON_TOTAL - size
+            archive.read_json("oci-layout")
+            self.assertEqual(archive.metadata_bytes, oci.MAX_JSON_TOTAL)
+            archive.metadata_bytes = oci.MAX_JSON_TOTAL - size + 1
+            with self.assertRaisesRegex(ValueError, "Too much OCI metadata"):
+                archive.read_json("oci-layout")
 
     def test_deterministic_merge_preserves_blobs_and_one_root_reference(self):
         amd64 = self.fixture("amd64", attestation="legacy")
@@ -684,9 +730,11 @@ class MergeTest(unittest.TestCase):
         ]
         for platform, path in inputs.items():
             arguments += ["--input", f"{platform}={path}"]
-        result = subprocess.run(arguments, capture_output=True, text=True, check=True)
+        # The argv above selects this interpreter and a copied local fixture script.
+        result = subprocess.run(arguments, capture_output=True, text=True, check=True)  # nosec B603
         self.assertEqual(json.loads(result.stdout)["revision"], REVISION)
-        duplicate = subprocess.run(
+        # Append a literal duplicate-input flag to the same local fixture invocation.
+        duplicate = subprocess.run(  # nosec B603
             arguments + ["--input", f"linux/amd64={inputs['linux/amd64']}"],
             capture_output=True,
             text=True,
@@ -716,7 +764,8 @@ class MergeTest(unittest.TestCase):
         ]
         for platform, path in inputs.items():
             arguments.extend(["--input", f"{platform}={path}"])
-        return subprocess.run(
+        # The argv above selects this interpreter and a copied local fixture script.
+        return subprocess.run(  # nosec B603
             arguments,
             capture_output=True,
             text=True,
