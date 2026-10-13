@@ -36,7 +36,10 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 import tomllib
-from release_control import atomic_write_bytes
+if __package__:
+    from .release_control import atomic_write_bytes
+else:
+    from release_control import atomic_write_bytes
 
 BASE = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\Z", re.ASCII)
 SHA = re.compile(r"[0-9a-f]{40}\Z", re.ASCII)
@@ -73,7 +76,7 @@ class VersionError(ValueError):
     """A release input does not satisfy the declared contract."""
 
 
-def require(condition, message):
+def require(condition: object, message: str) -> None:
     """Raise a normal exception (also with Python assertions disabled)."""
     if not condition:
         raise VersionError(message)
@@ -91,7 +94,7 @@ def digest(value):
     return hashlib.sha256(value).hexdigest()
 
 
-def policy_digest(policy):
+def policy_digest(policy: object) -> str:
     """Bind every policy field to the frozen identity."""
     return digest(json_bytes(policy))
 
@@ -206,7 +209,7 @@ def _input_declaration(item):
         require("package" not in item, f"{kind} does not accept package")
 
 
-def validate_policy(policy):
+def validate_policy(policy: object) -> dict[str, object]:
     """Validate only this extension; the release engine owns the outer policy."""
     require(isinstance(policy, dict), "Policy must be an object")
     config = policy.get("versioning")
@@ -298,7 +301,14 @@ def _identity(base, channel, sequence):
     return f"{base}-{channel}.{sequence}"
 
 
-def create_plan(base, channel, sequence, source_sha, policy, build_number=None):  # pylint: disable=too-many-arguments
+def create_plan(
+    base: str,
+    channel: str,
+    sequence: int | str | None,
+    source_sha: str,
+    policy: dict[str, object],
+    build_number: int | None = None,
+) -> dict[str, object]:  # pylint: disable=too-many-arguments
     """Create a deterministic identity from already allocated release decisions."""
     config = validate_policy(policy)
     version = _identity(base, channel, sequence)
@@ -332,7 +342,9 @@ def create_plan(base, channel, sequence, source_sha, policy, build_number=None):
     return plan
 
 
-def validate_plan(plan, policy=None, source_sha=None):
+def validate_plan(
+    plan: object, policy: dict[str, object] | None = None, source_sha: str | None = None
+) -> dict[str, object]:
     """Validate an exact immutable plan and optional source/policy binding."""
     require(isinstance(plan, dict), "Release plan must be an object")
     keys = {
@@ -399,13 +411,13 @@ def validate_plan(plan, policy=None, source_sha=None):
     return plan
 
 
-def plan_digest(plan):
+def plan_digest(plan: object) -> str:
     """Return the canonical digest after validating the complete plan."""
     validate_plan(plan)
     return digest(json_bytes(plan))
 
 
-def effective_inputs_digest(evidence):
+def effective_inputs_digest(evidence: list[dict[str, object]]) -> str:
     """Hash only the actual build inputs, independent of pre-sync file state."""
     entries = []
     seen = set()
@@ -421,7 +433,9 @@ def effective_inputs_digest(evidence):
     return digest(json_bytes(sorted(entries, key=lambda item: item["path"])))
 
 
-def projections(plan, ecosystem="semver"):
+def projections(
+    plan: dict[str, object], ecosystem: str = "semver"
+) -> dict[str, str | int | None]:
     """Map identity into package and numeric platform representations."""
     require(ecosystem in {"semver", "pep440"}, "Unsupported package ecosystem")
     package = plan["version"]
@@ -462,7 +476,9 @@ def projections(plan, ecosystem="semver"):
     }
 
 
-def projected_value(plan, declaration):
+def projected_value(
+    plan: dict[str, object], declaration: dict[str, object]
+) -> str | int:
     """Compute the one explicitly declared field projection."""
     kind = declaration.get("value", "package")
     result = projections(plan, declaration.get("ecosystem", "semver"))[kind]
@@ -474,7 +490,7 @@ def projected_value(plan, declaration):
     return prefix + str(result) if prefix else result
 
 
-def _path(root, name):
+def _path(root: str | Path, name: str) -> Path:
     relative = _relative(name)
     root = Path(root).resolve(strict=True)
     path = root
@@ -1004,7 +1020,12 @@ def _edit(raw, declaration, value):
     raise VersionError(f"Unsupported version format: {kind}")
 
 
-def sync_versions(root, policy, plan, check=False):  # pylint: disable=too-many-locals
+def sync_versions(
+    root: str | Path,
+    policy: dict[str, object],
+    plan: dict[str, object],
+    check: bool = False,
+) -> list[dict[str, object]]:  # pylint: disable=too-many-locals
     """Validate all edits first; return one digest record per declared input file."""
     validate_plan(plan, policy)
     root = Path(root).resolve(strict=True)
@@ -1091,7 +1112,7 @@ def _apply_version_edits(root, originals, edited, paths, drift):
             path.unlink(missing_ok=True)
 
 
-def read_base_version(root, policy):
+def read_base_version(root: str | Path, policy: dict[str, object]) -> str:
     """Read the declared source without asking Git or a moving remote tag."""
     config = validate_policy(policy)
     name = policy.get("version_file")
@@ -1123,7 +1144,9 @@ def read_base_version(root, policy):
     return value
 
 
-def check_base_versions(root, policy, base=None):
+def check_base_versions(
+    root: str | Path, policy: dict[str, object], base: str | None = None
+) -> list[dict[str, object]]:
     """Check committed base fields, excluding allocated native build counters."""
     validate_policy(policy)
     base = base or read_base_version(root, policy)
@@ -1140,7 +1163,9 @@ def check_base_versions(root, policy, base=None):
     return sync_versions(root, filtered, plan, check=True)
 
 
-def verify_checkout(root, policy, plan):
+def verify_checkout(
+    root: str | Path, policy: dict[str, object], plan: dict[str, object]
+) -> None:
     """Bind CLI overlays to a commit and reject other edits in owned input files.
 
     Pure adapter tests and source exports need no Git checkout. Release orchestration
@@ -1694,7 +1719,9 @@ def _field_artifact(path, declaration, expected):
     return raw, result
 
 
-def verify_artifact(path, declaration, plan):  # pylint: disable=too-many-statements
+def verify_artifact(
+    path: str | Path, declaration: dict[str, object], plan: dict[str, object]
+) -> dict[str, object]:  # pylint: disable=too-many-statements
     """Inspect real metadata without extracting archives or executing payloads."""
     validate_plan(plan)
     _declaration(declaration, artifact=True)

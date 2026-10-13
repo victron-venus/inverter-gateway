@@ -6,7 +6,8 @@
 """Exercise bounded release payload I/O and fail-closed staging offline."""
 
 import io
-import subprocess
+# Imported only for subprocess result/exception fixtures; commands are mocked.
+import subprocess  # nosec B404
 import tempfile
 import unittest
 from pathlib import Path

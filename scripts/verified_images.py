@@ -13,19 +13,29 @@ import json
 import os
 import secrets
 import stat
-import subprocess
+# Fixed skopeo reads compare registry bytes with authenticated release assets.
+import subprocess  # nosec B404
 import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from publish_verified import verified_assets, verified_publication_config
-from release_control import (
-    GitHub,
-    ReleaseError,
-    digest,
-    require,
-)
+if __package__:
+    from .publish_verified import verified_assets, verified_publication_config
+    from .release_control import (
+        GitHub,
+        ReleaseError,
+        digest,
+        require,
+    )
+else:
+    from publish_verified import verified_assets, verified_publication_config
+    from release_control import (
+        GitHub,
+        ReleaseError,
+        digest,
+        require,
+    )
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -124,12 +134,14 @@ def resolve(policy: dict, tag: str, directory: Path) -> dict:
             Path(name).name == name and (directory / name).is_file(),
             "Approved container archive is missing",
         )
-        local = subprocess.run(
+        # Verified regular archive path is a single transport argument; no shell.
+        local = subprocess.run(  # nosec B603, B607
             ["skopeo", "inspect", "--raw", "oci-archive:" + str(directory / name)],
             capture_output=True,
             check=True,
         ).stdout
-        remote = subprocess.run(
+        # Destination and version come from the authenticated source policy and manifest.
+        remote = subprocess.run(  # nosec B603, B607
             [
                 "skopeo",
                 "inspect",

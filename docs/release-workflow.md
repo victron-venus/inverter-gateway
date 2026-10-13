@@ -32,6 +32,7 @@ python3 scripts/release.py status
 Callable validation workflows:
 - `.github/workflows/ci.yml`
 - `.github/workflows/codeql.yml`
+- `.github/workflows/dependency-review.yml`
 
 The [release strategy](../RELEASING.md) defines versioning, channels, acceptance,
 ownership, hotfixes and rollback. This document is the operational runbook.
@@ -72,6 +73,9 @@ displays the request.
 
 If the base version already has a stable release, bump the committed version through
 a PR before beta/RC publication. Nightly builds may still use that existing base. After every fresh check and platform build passes, an automatic nightly skips duplicate GitHub publication if retained immutable evidence qualifies an existing beta/RC/stable at the same source, policy and base. It reports `reused` with that tag, retains its Actions build artifacts, and does not advance the publication floor or create new promotion evidence. Reserved counters may have gaps. Mutable build inputs and current security databases are still exercised. Manual nightly requests, new sources and missing/expired/unverifiable evidence retain full publication.
+Automatic push betas skip packaging/publication with `version-required` when their
+committed base already has a stable tag. Quality and security checks still run.
+Prepare the next version through a PR; manual beta/RC requests still fail strictly.
 
 Candidate tags are unique and immutable: `vX.Y.Z-beta.N`, `vX.Y.Z-rc.N`, or
 `vX.Y.Z-nightly.<UTC timestamp>.<run>.<attempt>`. Candidates are prereleases and
@@ -137,8 +141,10 @@ credentials/streams and production access are not implied by unit tests or build
 The release engine/client are vendored from `victron-venus/venus-os-ci-toolkit`.
 They are excluded from consumer-specific formatting/type policy. Application
 release workflows run the mandatory Release tooling contracts job; validation-only
-projects receive the local client, whose contracts run in the toolkit. Update the toolkit source and rerun
-`scripts/install_release.py`; `--check` detects drift.
+projects receive the local client, whose contracts run in the toolkit. Update the toolkit source, then run
+`python3 scripts/install_release.py /path/to/consumer` from the toolkit checkout;
+add `--check` to detect drift without writing files. The installer is not vendored
+into consumer repositories.
 
 References: [GitHub schedules](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule),
 [protected environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments),

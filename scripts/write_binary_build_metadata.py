@@ -12,7 +12,10 @@ import sys
 from pathlib import Path
 
 import tomllib
-from version_receipt import confined_cli_path
+if __package__:
+    from .version_receipt import confined_cli_path
+else:
+    from version_receipt import confined_cli_path
 
 
 def main() -> None:

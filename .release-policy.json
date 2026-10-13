@@ -37,6 +37,12 @@
         "format": "cargo-lock",
         "value": "package",
         "package": "inverter-gateway"
+      },
+      {
+        "path": "fuzz/Cargo.lock",
+        "format": "cargo-lock",
+        "value": "package",
+        "package": "inverter-gateway"
       }
     ],
     "artifacts": [
@@ -58,9 +64,12 @@
         "value": "package"
       }
     ],
-    "toolkit_revision": "fca833a9da6b49116444ffd7ac6739e08f9cbc61"
+    "toolkit_revision": "5e413f80a4353d328b4529eae57992ac3987e2dd"
   },
   "single_entry_ci": true,
   "release_notes": "CHANGELOG.md",
-  "toolkit_revision": "ab9f337e5fa49c263c873d65c9e50dde7249af56"
+  "toolkit_revision": "5e413f80a4353d328b4529eae57992ac3987e2dd",
+  "fuzzing": {
+    "toolkit_ref": "5e413f80a4353d328b4529eae57992ac3987e2dd"
+  }
 }

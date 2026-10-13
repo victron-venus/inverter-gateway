@@ -16,7 +16,8 @@ import argparse
 import json
 import re
 import shutil
-import subprocess
+# Subprocess calls below use argument vectors with shell=False.
+import subprocess  # nosec B404
 import sys
 from pathlib import Path
 
@@ -31,7 +32,8 @@ RC = re.compile(
 
 def run(*args: str, capture: bool = False) -> str:
     """Run a checked command from the release repository root."""
-    result = subprocess.run(
+    # Only reviewed repository policy commands; never release/event input.
+    result = subprocess.run(  # nosec B603
         args,
         cwd=ROOT,
         check=True,
@@ -338,7 +340,10 @@ def execute(args: argparse.Namespace, config: dict) -> None:
             )
         # Legacy validation-only clients do not include versioning modules.
         # pylint: disable-next=import-outside-toplevel
-        from prepare_version import prepare
+        if __package__:
+            from .prepare_version import prepare
+        else:
+            from prepare_version import prepare
 
         print(
             json.dumps(

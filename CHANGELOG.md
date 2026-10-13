@@ -4,6 +4,7 @@
 
 ### Changes
 
+- Gate release candidates on bounded energy-source and controller-payload fuzz campaigns, retaining source-bound validation evidence.
 - Reuse fresh telemetry when deciding command availability, avoiding unnecessary state copies.
 - Replace the unmaintained PEM parser and refresh compatible dependencies.
 - Stop packaging on a binary-version mismatch, preserve reviewed release notes, and read release API status from HTTP headers.

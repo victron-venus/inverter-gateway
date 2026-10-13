@@ -10,11 +10,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+# Subprocess calls below use argument vectors with shell=False.
+import subprocess  # nosec B404
 from pathlib import Path
 
-import version_plan
-from release_version_adapter import checked_version, resolve_plan_path
+if __package__:
+    from . import version_plan
+    from .release_version_adapter import checked_version, resolve_plan_path
+else:
+    import version_plan
+    from release_version_adapter import checked_version, resolve_plan_path
 
 
 def labels(root: Path) -> dict[str, str]:
@@ -27,7 +32,8 @@ def labels(root: Path) -> dict[str, str]:
     else:
         package = version_plan.read_base_version(root, policy)
         version_plan.check_base_versions(root, policy, base=package)
-    revision = subprocess.check_output(
+    # Developer/CI toolchain selected by the invoking operator via PATH.
+    revision = subprocess.check_output(  # nosec B603, B607
         ["git", "rev-parse", "HEAD"], cwd=root, text=True
     ).strip()
     return {
