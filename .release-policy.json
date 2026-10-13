@@ -37,6 +37,12 @@
         "format": "cargo-lock",
         "value": "package",
         "package": "inverter-gateway"
+      },
+      {
+        "path": "fuzz/Cargo.lock",
+        "format": "cargo-lock",
+        "value": "package",
+        "package": "inverter-gateway"
       }
     ],
     "artifacts": [

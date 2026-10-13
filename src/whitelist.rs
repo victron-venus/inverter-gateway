@@ -81,7 +81,8 @@ const CONTROL_FLAGS: &[&str] = &[
     "minimize_charging",
 ];
 
-fn controller_payload(name: &str, body: Value) -> Result<Value, CommandError> {
+/// Validate and normalize a controller command without queuing or publishing it.
+pub fn controller_payload(name: &str, body: Value) -> Result<Value, CommandError> {
     let invalid = || CommandError::InvalidBody("invalid inverter-control command payload".into());
     let object = body.as_object().ok_or_else(invalid)?;
     match name {

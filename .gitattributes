@@ -1,0 +1,4 @@
+
+# Fuzz seeds are exact protocol bytes, including deliberate CRLF.
+/fuzz/corpus/** -text whitespace=-blank-at-eol
+/fuzz/Cargo.lock text eol=lf

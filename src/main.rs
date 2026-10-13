@@ -1,18 +1,10 @@
 use tokio::signal;
 use tracing::{info, warn};
 
-mod alarms;
-mod config;
-mod energy;
-mod http;
-mod mqtt_bridge;
-mod state;
-mod transport;
-mod whitelist;
-
-use crate::config::Config;
-use crate::mqtt_bridge::MqttBridge;
-use crate::state::AppState;
+use inverter_gateway::config::Config;
+use inverter_gateway::mqtt_bridge::MqttBridge;
+use inverter_gateway::state::AppState;
+use inverter_gateway::{http, transport};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

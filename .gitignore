@@ -13,3 +13,8 @@ __pycache__/
 .release-plan.json
 .release-inputs.json
 release-assets/
+
+# Local fuzz build and diagnostics; checked-in synthetic seeds are retained.
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/coverage/

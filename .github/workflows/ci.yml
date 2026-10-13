@@ -27,6 +27,11 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: test
         run: cargo test --locked --all-targets
+      - name: Replay fixed fuzz regression corpus (no fuzz campaign)
+        run: |
+          cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path fuzz/Cargo.toml --lib -- -D warnings
+          cargo test --locked --manifest-path fuzz/Cargo.toml --lib
       - name: Build and smoke test the immutable container
         run: |
           docker build --tag inverter-gateway:ci .

@@ -1,5 +1,11 @@
 # inverter-gateway
 
+[![Fuzzing: RC only](https://img.shields.io/badge/Fuzzing-RC%20only-blue)](FUZZING.md)
+
+Public release candidates run bounded, isolated fuzz campaigns for energy-source
+configuration and controller command validation. See [fuzzing scope, reproduction,
+and release evidence](FUZZING.md).
+
 Dashboard ESS, inverter-control flags and discovered EV data are available over
 the same authenticated snapshot/SSE transport. See
 [dashboard control and EV telemetry](docs/dashboard-control-telemetry.md) for
