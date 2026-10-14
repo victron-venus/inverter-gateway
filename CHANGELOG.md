@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## [0.4.3] - Development line
 
 - Extend public RC fuzzing to certificate-strength parsing, DER boundaries and PEM chain limits; replay synthetic positive and negative certificate fixtures in ordinary CI.
 - Upgrade rustls to at least 0.23.46 in both application and fuzz dependency locks, addressing RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348 and RUSTSEC-2026-0349. Retain normal certificate trust and hostname verification.
+- Preserve existing configuration and supported certificate requirements; no data migration is required. The new parser entry points are enabled only by the non-default fuzzing feature.
 
 ## [0.4.2] - Development line
 
