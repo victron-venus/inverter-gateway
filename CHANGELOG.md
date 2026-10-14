@@ -4,6 +4,8 @@
 
 ### Changes
 
+- Enforce exact public-key strength for MQTT peers/trust roots and native HTTPS certificates, including rejection of 2047-bit RSA keys before application traffic.
+
 - Gate release candidates on bounded energy-source and controller-payload fuzz campaigns, retaining source-bound validation evidence.
 - Reuse fresh telemetry when deciding command availability, avoiding unnecessary state copies.
 - Replace the unmaintained PEM parser and refresh compatible dependencies.
@@ -12,11 +14,11 @@
 
 ### Upgrade
 
-No configuration or data migration is introduced. Retain the existing MQTT and HTTPS credentials. This candidate still requires independent validation against the intended equipment before production use.
+Replace RSA certificates below 2048 bits or unsupported weak curves before updating. Native HTTPS and explicitly configured MQTT roots now fail closed on weak certificates; weak system roots are excluded. Existing strong certificates and credentials remain usable. This candidate still requires independent validation against the intended equipment before production use.
 
 ### Security
 
-Replace the unmaintained PEM parser and retain pinned CI dependencies. MQTT and HTTPS authentication requirements remain unchanged; keep credentials outside published artifacts and maintain network isolation and independent equipment safeguards.
+Replace the unmaintained PEM parser and retain pinned CI dependencies. MQTT and HTTPS retain normal trust, hostname and signature verification with an additional key-strength floor; keep credentials outside published artifacts and maintain network isolation and independent equipment safeguards.
 
 ## [0.4.1] - Development line
 

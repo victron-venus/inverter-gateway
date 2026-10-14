@@ -52,7 +52,7 @@ Do not equate a green metadata or release job with successful application tests.
 - Review dependency, code-scanning and secret-scanning findings and their age. A workflow success result is not proof that all findings are resolved.
 - Review the actual cryptographic libraries, protocols, key lengths, randomness, certificate checks and password storage applicable to this project. Do not copy another project's answers.
 - Verify build reproducibility from source, test policy adherence in recent substantive changes, dynamic analysis and any manual-memory-code checks.
-- Link only this project's real awarded badge once the assessment is accepted.
+- Link this project's live assessment; its badge displays the current status, including work in progress.
 
 The live assessment, when created, is the source of truth for the badge level. Unverified criteria remain open.
 
@@ -88,3 +88,9 @@ The [CodeQL workflow](../.github/workflows/codeql.yml) also analyzes scripts/pub
 Toolkit revision `d8089003f43637ee420fa4cbcccdf11f5d21e469` also rejects empty Markdown lists, task items and quotations as release guidance, while preserving literal examples and lists with substantive text.
 
 The CodeQL configuration also analyzes GitHub Actions in its own analysis category; existing application-language analyses remain enabled.
+
+## Reviewed governance and qualification scope
+
+See [governance](../GOVERNANCE.md), [community conduct](../CODE_OF_CONDUCT.md) and [architecture, security evidence and roadmap](project-assurance.md). The maintainer has confirmed secure-design/common-vulnerability knowledge and no off-GitHub reports during the preceding year. These facts do not replace review of this repository's GitHub history and actual code. There is no backup maintainer or one-week recovery mechanism.
+
+Release candidates now include bounded, source-bound mutation campaigns; use the current fuzzing documentation and the corresponding RC report. Ordinary green PR checks are not evidence that a mutation campaign ran on that PR. Source and binary/container signing, full statement coverage and remaining Silver requirements are assessed separately.

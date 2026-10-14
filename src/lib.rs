@@ -5,5 +5,6 @@ pub mod energy;
 pub mod http;
 pub mod mqtt_bridge;
 pub mod state;
+mod tls_policy;
 pub mod transport;
 pub mod whitelist;
