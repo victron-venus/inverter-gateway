@@ -6,6 +6,20 @@
 - Upgrade rustls to at least 0.23.46 in both application and fuzz dependency locks, addressing RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348 and RUSTSEC-2026-0349. Retain normal certificate trust and hostname verification.
 - Preserve existing configuration and supported certificate requirements; no data migration is required. The new parser entry points are enabled only by the non-default fuzzing feature.
 
+### Upgrade
+
+Use the new versioned package with the existing configuration and credentials;
+no data migration is required. The certificate requirements introduced in 0.4.2
+remain in force. Verify the candidate against the intended MQTT and HTTPS peers
+before a production rollout, retaining the previous package for rollback.
+
+### Security
+
+This version incorporates the upstream rustls security fixes listed above and
+adds offline checks for malformed DER, weak keys and oversized PEM chains.
+Normal trust, hostname and signature verification remain enabled. The test-only
+parser entry points require the non-default fuzzing feature.
+
 ## [0.4.2] - Development line
 
 ### Changes
