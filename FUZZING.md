@@ -35,6 +35,15 @@ matching accepted RC source and artifacts; it does not repeat the campaign.
   stable under revalidation; unknown fields and unknown commands are rejected.
   Normalized toggle values remain on/off and setpoint values remain signed
   32-bit integers or null. Nothing is queued or published.
+- `certificate-policy` exercises the production DER and PEM key-strength
+  parsers through feature-gated, test-only entry points. It checks complete DER
+  consumption, truncation/trailing-byte rejection, and chains of zero through
+  eighteen certificates around the sixteen-certificate limit. Synthetic seeds
+  cover RSA 1024/2047/2048-bit keys, allowed P-256 and Ed25519 keys, and disallowed
+  P-224 keys. A chain containing a weak key must fail, even after strong keys.
+  Named seed acceptance is asserted in ordinary CI; malformed seeds are also
+  replayed. These checks do not establish certificate trust: production rustls
+  still verifies chains, signatures and names before applying this policy.
 
 The binary and fuzz harness use the same library modules. `src/main.rs` remains
 responsible for process startup; the pure `controller_payload` entry point only
@@ -50,7 +59,7 @@ private URLs, captured production payloads, or device data belong in the corpus.
 
 ## Budgets and retained evidence
 
-Two targets run sequentially for **60 seconds each** (120 seconds of mutation
+Three targets run sequentially for **60 seconds each** (180 seconds of mutation
 budget). The shared runner additionally bounds per-input time, memory, and the
 whole job. Compilation is separate from mutation time. Rust is pinned to
 `nightly-2026-10-12`; `fuzz/Cargo.lock` starts from the production lockfile and
@@ -80,6 +89,11 @@ cp fuzz/corpus/energy_sources/* /tmp/gateway-fuzz-corpus/
 cargo +nightly-2026-10-12 fuzz run energy_sources /tmp/gateway-fuzz-corpus -- \
   -max_total_time=60 -timeout=10 -rss_limit_mb=2048
 ```
+
+For the certificate target, copy `fuzz/corpus/certificate_policy/` to a separate
+scratch directory and use `certificate_policy` in the same command. The `fuzzing`
+Cargo feature is enabled only by the unpublished fuzz crate; ordinary builds do
+not expose these test entry points. No private certificate keys are committed.
 
 Use a disposable corpus because libFuzzer adds useful mutations there. The
 manifest maps the documented target names to executable names (underscores

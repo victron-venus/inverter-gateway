@@ -2,6 +2,34 @@ use inverter_gateway::{energy::EnergyConfig, whitelist::controller_payload};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
+const STRONG_PEM: &[u8] = include_bytes!("../../tests/fixtures/rsa-2048-cert.pem");
+const WEAK_PEM: &[u8] = include_bytes!("../../tests/fixtures/rsa-2047-cert.pem");
+
+/// Pure parsing and strength checks only: no trust decisions, sockets or credentials.
+pub fn certificate_policy(data: &[u8]) {
+    use inverter_gateway::fuzzing::{strong_der, strong_pem};
+    if data.len() > 65_536 {
+        return;
+    }
+    if strong_der(data) {
+        // A complete DER object cannot acquire a trailing byte or lose its last byte.
+        let mut trailing = data.to_vec();
+        trailing.push(0);
+        assert!(!strong_der(&trailing));
+        assert!(!strong_der(&data[..data.len() - 1]));
+    }
+    let _ = strong_pem(data);
+
+    // Structured valid chains reach the count and exact-strength boundaries even
+    // when random byte mutations would destroy ASN.1 syntax at the outer layer.
+    let count = usize::from(data.first().copied().unwrap_or(0) % 19);
+    let chain = STRONG_PEM.repeat(count);
+    assert_eq!(strong_pem(&chain), (1..=16).contains(&count));
+    let mut weak_chain = chain;
+    weak_chain.extend_from_slice(WEAK_PEM);
+    assert!(!strong_pem(&weak_chain));
+}
+
 pub fn energy_sources(data: &[u8]) {
     if data.len() > 8192 {
         return;
@@ -121,6 +149,7 @@ mod tests {
         for (name, run) in [
             ("energy_sources", energy_sources as fn(&[u8])),
             ("command_payload", command_payload as fn(&[u8])),
+            ("certificate_policy", certificate_policy as fn(&[u8])),
         ] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("corpus")
@@ -131,5 +160,36 @@ mod tests {
             run(b"");
             run(&[0xff, 0]);
         }
+    }
+
+    #[test]
+    fn certificate_seed_contracts() {
+        use inverter_gateway::fuzzing::{strong_der, strong_pem};
+        for (name, valid) in [
+            ("rsa-1024", false),
+            ("rsa-2047", false),
+            ("rsa-2048", true),
+            ("ec-p256", true),
+            ("ec-p224", false),
+            ("ed25519", true),
+        ] {
+            for (extension, check) in [
+                ("der", strong_der as fn(&[u8]) -> bool),
+                ("pem", strong_pem as fn(&[u8]) -> bool),
+            ] {
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("corpus/certificate_policy")
+                    .join(format!("{name}.{extension}"));
+                assert_eq!(
+                    check(&std::fs::read(path).unwrap()),
+                    valid,
+                    "{name}.{extension}"
+                );
+            }
+        }
+        for count in 0..=18 {
+            certificate_policy(&[count]);
+        }
+        assert!(!strong_der(&vec![0; 65_537]));
     }
 }
