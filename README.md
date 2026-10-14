@@ -307,6 +307,15 @@ cargo test
 
 CI runs the same three commands on every PR.
 
+After the container smoke test, CI retains its exact Docker image for three days
+as an `inverter-gateway-ci-<run>-<attempt>-<architecture>` artifact. The archive
+includes SHA-256 checksums and provenance (run, PR head, checked-out commit/tree,
+image ID, OS and architecture). For a manual canary, select a successful run for
+the reviewed head, verify both checksums and provenance before `docker load`,
+and compare the loaded image ID. PR checkouts may be merge commits: compare their
+tree to the intended source or review that merge. These artifacts do not deploy
+automatically and are not release images.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
