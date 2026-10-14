@@ -20,6 +20,8 @@ Replace RSA certificates below 2048 bits or unsupported weak curves before updat
 
 ### Security
 
+Require rustls 0.23.46 in both locked dependency graphs to resolve inherited dependency advisories RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348 and RUSTSEC-2026-0349.
+
 Replace the unmaintained PEM parser and retain pinned CI dependencies. MQTT and HTTPS retain normal trust, hostname and signature verification with an additional key-strength floor; keep credentials outside published artifacts and maintain network isolation and independent equipment safeguards.
 
 ## [0.4.1] - Development line
