@@ -4,6 +4,8 @@
 
 ### Changes
 
+- Add explicit Russian energy reports with `GET /v1/energy?locale=ru`, including spoken numbers, units, source warnings, alarms and the brief overview. English remains the default; the additive `locale` response field identifies the selected language without changing numeric telemetry or schema version 1.
+
 - Enforce exact public-key strength for MQTT peers/trust roots and native HTTPS certificates, including rejection of 2047-bit RSA keys before application traffic.
 
 - Gate release candidates on bounded energy-source and controller-payload fuzz campaigns, retaining source-bound validation evidence.

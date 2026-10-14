@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "locale": "ru",
+  "generated_at": 1700000000,
+  "mqtt_connected": true,
+  "metrics": {
+    "battery_soc": {
+      "value": 70.0,
+      "unit": "%",
+      "status": "fresh",
+      "sources": [
+        "system/0/Dc/Battery/Soc"
+      ],
+      "age_seconds": 2
+    },
+    "solar_power": {
+      "value": 2500.0,
+      "unit": "W",
+      "status": "fresh",
+      "sources": [
+        "system/0/Dc/Pv/Power"
+      ],
+      "age_seconds": 3
+    },
+    "solar_today": {
+      "value": 4.5,
+      "unit": "kWh",
+      "status": "fresh",
+      "sources": [
+        "solarcharger/1/History/Daily/0/Yield"
+      ],
+      "age_seconds": 4
+    },
+    "load_power": {
+      "value": 1250.0,
+      "unit": "W",
+      "status": "fresh",
+      "sources": [
+        "system/0/Ac/ConsumptionOnOutput/L1/Power"
+      ],
+      "age_seconds": 2
+    },
+    "grid_power": {
+      "value": -500.0,
+      "unit": "W",
+      "status": "fresh",
+      "sources": [
+        "system/0/Ac/Grid/L1/Power"
+      ],
+      "age_seconds": 2
+    },
+    "battery_power": {
+      "value": 750.0,
+      "unit": "W",
+      "status": "fresh",
+      "sources": [
+        "system/0/Dc/Battery/Power"
+      ],
+      "age_seconds": 2
+    }
+  },
+  "alarms": {
+    "status": "fresh",
+    "active": [],
+    "sources": [
+      "battery/1/Alarms/LowVoltage"
+    ],
+    "age_seconds": 1
+  },
+  "reports": {
+    "battery": {
+      "text": "Заряд аккумулятора: семьдесят процентов.",
+      "status": "fresh"
+    },
+    "solar": {
+      "text": "Солнечная мощность: две целых пять десятых киловатта.",
+      "status": "fresh"
+    },
+    "solar_today": {
+      "text": "Выработка солнечных контроллеров сегодня: четыре целых пять десятых киловатт-часа.",
+      "status": "fresh"
+    },
+    "alarms": {
+      "text": "В контролируемых источниках активных аварий нет.",
+      "status": "fresh"
+    },
+    "status": {
+      "text": "Заряд аккумулятора: семьдесят процентов. Солнечная мощность: две целых пять десятых киловатта. Выработка солнечных контроллеров сегодня: четыре целых пять десятых киловатт-часа. В контролируемых источниках активных аварий нет.",
+      "status": "fresh",
+      "brief_text": "Аккумулятор: семьдесят процентов. Солнце: две целых пять десятых киловатта. Солнечные контроллеры сегодня: четыре целых пять десятых киловатт-часа. В контролируемых источниках активных аварий нет."
+    },
+    "flow": {
+      "text": "Выбранные нагрузки переменного тока: одна целая двадцать пять сотых киловатта. Отдача энергии в сеть: пятьсот ватт. Зарядка системного аккумулятора: семьсот пятьдесят ватт.",
+      "status": "fresh"
+    }
+  }
+}

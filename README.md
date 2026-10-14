@@ -23,7 +23,8 @@ Cloudflare Access + a bearer token, instead of talking to Cerbo MQTT on the LAN.
 
 The gateway also provides **`GET /v1/energy`**: normalized battery charge, solar
 power, daily solar yield, explicitly monitored warnings/alarms, per-source freshness,
-and shared English voice reports.
+and shared voice reports in English or Russian. English remains the default;
+request `GET /v1/energy?locale=ru` for deterministic Russian speech text.
 Alexa can consume it directly through its server adapter; Google Home can use
 Home Assistant as an optional adapter. Energy data and wording are owned here,
 so Home Assistant is not required as the telemetry source. Computation stays on
