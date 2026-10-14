@@ -4,7 +4,8 @@
 [![Fuzzing: RC only](https://img.shields.io/badge/Fuzzing-RC%20only-blue)](FUZZING.md)
 
 Public release candidates run bounded, isolated fuzz campaigns for energy-source
-configuration and controller command validation. See [fuzzing scope, reproduction,
+configuration, controller command validation, and certificate key-strength parsing.
+See [fuzzing scope, reproduction,
 and release evidence](FUZZING.md).
 
 Dashboard ESS, inverter-control flags and discovered EV data are available over

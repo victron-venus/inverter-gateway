@@ -5,6 +5,10 @@ edition = "2021"
 description = "Victron inverter remote gateway — MQTT-to-HTTPS/SSE bridge"
 license = "MIT"
 
+[features]
+# Exposes only the pure policy checks to the separate, unpublished fuzz crate.
+fuzzing = []
+
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
