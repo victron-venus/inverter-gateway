@@ -116,7 +116,9 @@ evidence runs the check; documentation-only unrelated changes can skip it.
 Optional top-level `preflight` is a list of reviewed deterministic command argv
 arrays, for example `[["node", "--test", "fuzz/parser.test.mjs"]]`. Each command
 has a 90-second cap and the whole preflight, including Python dependency setup,
-has a four-minute cap. Native targets do not repeat their build setup in ordinary
+has a four-minute cap. The enclosing Python configuration job has a ten-minute
+cap to preserve time for checkout, existing contracts and failure diagnostics.
+Native targets do not repeat their build setup in ordinary
 CI: keep fixed-seed regression tests in their existing language test job. Explicit
 preflight commands also run in the isolated RC environment after its build.
 
