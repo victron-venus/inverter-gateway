@@ -21,6 +21,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import stat
 # Reviewed build and fuzz commands use argv arrays, never shell interpolation.
 import subprocess  # nosec B404
 import time
@@ -265,27 +266,40 @@ def engine_metrics(engine: str, log: str) -> dict:
     return metrics
 
 
-def retain_corpus(source: Path, destination: Path) -> dict:
-    """Copy only bounded regular corpus inputs, never symlinks or a build cache."""
-    result = {"files": 0, "bytes": 0, "truncated": False}
-    destination.mkdir(parents=True, exist_ok=True)
-    if not source.is_dir() or source.is_symlink():
-        return result
-    for current, directories, files in os.walk(source, followlinks=False):
+def corpus_walk_error(error: OSError) -> None:
+    raise error
+
+
+def corpus_files(source: Path):
+    """Walk regular inputs without silently dropping unreadable directories."""
+    for current, directories, files in os.walk(source, followlinks=False, onerror=corpus_walk_error):
         directories[:] = sorted(name for name in directories if not (Path(current) / name).is_symlink())
         for name in sorted(files):
             path = Path(current) / name
-            if path.is_symlink() or not path.is_file():
-                continue
-            size = path.stat().st_size
-            if result["files"] >= CORPUS_FILES or result["bytes"] + size > CORPUS_BYTES:
-                result["truncated"] = True
-                return result
-            target = destination / path.relative_to(source)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(path, target)
-            result["files"] += 1
-            result["bytes"] += size
+            if stat.S_ISREG(path.lstat().st_mode):
+                yield path
+
+
+def retain_corpus(source: Path, destination: Path, *, required: bool = False) -> dict:
+    """Copy only bounded regular corpus inputs, never symlinks or a build cache."""
+    result = {"files": 0, "bytes": 0, "truncated": False}
+    destination.mkdir(parents=True, exist_ok=True)
+    if required and (not source.is_dir() or source.is_symlink()):
+        raise ValueError("Declared preflight corpus must be an existing directory without symlinks")
+    if not source.is_dir() or source.is_symlink():
+        return result
+    for path in corpus_files(source):
+        size = path.stat().st_size
+        if result["files"] >= CORPUS_FILES or result["bytes"] + size > CORPUS_BYTES:
+            result["truncated"] = True
+            return result
+        target = destination / path.relative_to(source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+        result["files"] += 1
+        result["bytes"] += size
+    if required and not result["files"]:
+        raise ValueError("Declared preflight corpus must contain at least one regular seed file")
     return result
 
 
@@ -381,7 +395,7 @@ def preflight_needed(root: Path, data: dict) -> bool:
     if event_name not in {"pull_request", "merge_group", "push"}:
         return False
     required = data.get("preflight-paths", [])
-    if not required:
+    if not required or "." in required:
         return True
     required = [*required, ".github/fuzz.json", ".github/requirements-fuzz.txt", ".release-policy.json",
                 "scripts/release_fuzz.py", "scripts/fuzz_python_preflight.py", ".github/workflows"]
@@ -404,7 +418,7 @@ def replay_python_target(root: Path, output: Path, target: dict, deadline: float
     target_dir.mkdir()
     corpus = target_dir / "corpus"
     if "corpus" in target:
-        retained = retain_corpus(confined(root, target["corpus"]), corpus)
+        retained = retain_corpus(confined(root, target["corpus"]), corpus, required=True)
         if retained["truncated"]:
             raise ValueError("Committed preflight corpus exceeds the bounded input budget")
     else:

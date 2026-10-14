@@ -100,12 +100,16 @@ check. This proves instrumentation for the declared functions, not full program
 coverage. The harness keeps responsibility for its offline dependency adapters.
 
 The preflight first runs `pip check`, then replays committed corpus inputs with
-`-runs=0`; no timed mutation campaign runs. Every RC performs these checks before
+`-runs=0`; no timed mutation campaign runs. An explicitly declared corpus must
+be an existing directory with at least one regular seed file; missing, empty or
+unreadable inputs fail the preflight. A zero-byte seed file remains a valid input.
+Every RC performs these checks before
 mutation. Python adopters also reuse the existing CI configuration job for this
 cheap check on relevant pull-request, merge-group and push changes. The job
 caches pip downloads keyed by the requirements file; installation still requires
 the reviewed hashes. `preflight-paths` is an optional list of literal source
-files or directories, without globs or trailing slashes. Fuzz manifests, locks,
+files or directories, without globs or trailing slashes. The path `.` selects
+every change. Fuzz manifests, locks,
 CI workflows and shared helpers always count as relevant. Unavailable diff
 evidence runs the check; documentation-only unrelated changes can skip it.
 
