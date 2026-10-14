@@ -143,8 +143,23 @@ def validate_workflow_pins(filename, workflow, pins):
             validate_action_reference(filename, reference, pins)
 
 
+def configured_workflow_pins(directory):
+    """Allow only canonical toolkit workflows explicitly enabled by the policy."""
+    policy_path = directory / ".release-policy.json"
+    policy = json.loads(policy_path.read_text()) if policy_path.exists() else {}
+    pins = {}
+    for section, workflow in (("coverage", "coverage-upload.yml"), ("fuzzing", "fuzz.yml")):
+        configuration = policy.get(section)
+        if configuration:
+            reference = configuration["toolkit_ref"]
+            if not isinstance(reference, str) or not re.fullmatch(COMMIT_SHA_PATTERN, reference):
+                raise ValueError("Toolkit workflow pins must be full commit SHAs")
+            pins[f"victron-venus/venus-os-ci-toolkit/.github/workflows/{workflow}"] = reference
+    return pins
+
+
 def generator_pins(directory):
-    """Load the canonical pin set, including an opt-in coverage workflow."""
+    """Load canonical action pins and explicitly configured toolkit workflows."""
     manifest = directory / ".github/action-pins.json"
     # Consumers vendor the generated scripts, not the generator or its manifest.
     # The canonical toolkit must retain the manifest consumed by its generator.
@@ -162,16 +177,8 @@ def generator_pins(directory):
         not re.fullmatch(COMMIT_SHA_PATTERN, pin) for pin in pins.values()
     ):
         raise ValueError("Generator pins must be full commit SHAs")
-    policy_path = directory / ".release-policy.json"
-    coverage = (
-        json.loads(policy_path.read_text()).get("coverage")
-        if policy_path.exists()
-        else None
-    )
-    if pins is not None and coverage:
-        pins[
-            "victron-venus/venus-os-ci-toolkit/.github/workflows/coverage-upload.yml"
-        ] = coverage["toolkit_ref"]
+    if pins is not None:
+        pins.update(configured_workflow_pins(directory))
     return pins
 
 
@@ -188,6 +195,19 @@ def validate_generator_pins(directory, workflows):
         ):
             raise ValueError(f"{filename}: missing generator marker")
         validate_workflow_pins(filename, workflow, pins)
+    validate_fuzz_pins(directory, workflows)
+
+
+def validate_fuzz_pins(directory, workflows):
+    """Consumers must update their wrapper, runtime and policy atomically."""
+    configured = configured_workflow_pins(directory)
+    action = "victron-venus/venus-os-ci-toolkit/.github/workflows/fuzz.yml"
+    if action not in configured:
+        return
+    reference = configured[action]
+    job = workflows.get("release-pipeline.yml", {}).get("jobs", {}).get("fuzz", {})
+    if job.get("uses") != action + "@" + reference or job.get("with", {}).get("toolkit-ref") != reference:
+        raise ValueError("Fuzz workflow, runtime and policy toolkit_ref must match")
 
 
 def _callable_workflow(workflows, visited, filename, chain=()):
@@ -343,7 +363,10 @@ def validate_release_gate(gate):
     if (
         gate.get("name") != "CI gate"
         or gate.get("if") != "${{ always() }}"
+        or gate.get("continue-on-error", "false") != "false"
         or len(commands) != 1
+        or commands[0].get("continue-on-error", "false") != "false"
+        or "if" in commands[0]
         or commands[0].get("run")
         != 'python3 scripts/release_validation.py gate --channel "$RELEASE_CHANNEL"'
         or commands[0].get("env")
@@ -362,7 +385,10 @@ def validate_release_channels(policy, workflows):
         if name in workflows:
             raise ValueError("Release validation workflow has no channel policy")
         return
-    from release_validation import channel_workflows, expected_results
+    if __package__:
+        from .release_validation import channel_workflows, expected_results
+    else:
+        from release_validation import channel_workflows, expected_results
 
     beta = channel_workflows(policy)
     validate_graph(workflows, beta)
