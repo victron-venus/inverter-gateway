@@ -339,7 +339,7 @@ def execute(command: list[str], cwd: Path, output: Path, timeout: int, isolated:
     return code, round(time.monotonic() - start, 3)
 
 
-def run_target(root: Path, output: Path, target: dict) -> dict:
+def run_target(root: Path, output: Path, target: dict, *, go_version_file: str | None = None) -> dict:
     name, seconds = target["name"], target["seconds"]
     target_dir = output / name
     target_dir.mkdir()
@@ -365,7 +365,10 @@ def run_target(root: Path, output: Path, target: dict) -> dict:
                 shutil.copytree(path, target_dir / f"go-regressions-{index}")
         # Native Go keeps coverage discoveries outside testdata/fuzz. Resolve the
         # selected toolchain's cache; do not include compiled objects or modules.
-        cache = subprocess.check_output([target["command"][0], "env", "GOCACHE"], cwd=cwd, text=True, timeout=30).strip()  # nosec B603
+        # A target may invoke Go through a Python/build adapter. Query the Go
+        # selected on PATH in the declared module, never the adapter executable.
+        go_cwd = confined(root, go_version_file).parent if go_version_file else cwd
+        cache = subprocess.check_output(["go", "env", "GOCACHE"], cwd=go_cwd, text=True, timeout=30).strip()  # nosec B603, B607
         metrics["generated_corpus"] = retain_corpus(Path(cache) / "fuzz", target_dir / "go-generated-corpus")
     return {"name": name, "seconds": seconds, "exit_code": code, "elapsed_seconds": elapsed, **metrics}
 
@@ -498,7 +501,7 @@ def campaign(root: Path, output: Path) -> None:
                 raise ValueError(f"Fuzz build/setup {index} failed with {code}")
         report["preflight"] = run_preflight(root, output / "preflight", data, setup=False)
         for target in data["targets"]:
-            report["targets"].append(run_target(root, output, target))
+            report["targets"].append(run_target(root, output, target, go_version_file=data.get("go-version-file")))
         if any(t["exit_code"] for t in report["targets"]):
             raise ValueError("One or more fuzz targets failed; inspect diagnostics")
         report["status"] = "passed"

@@ -81,7 +81,10 @@ or `libfuzzer`), argument-array `command`, and `seconds` (1–120). Optional `cw
 is relative to the repository. Optional `corpus` names a committed seed directory;
 the runner copies it before mutation. Go uses its native `testdata/fuzz` corpus.
 The total mutation budget is at most 600 seconds across at most 12 targets.
-`go-version-file` is optional, Go-only and relative to the repository.
+`go-version-file` is optional, Go-only and relative to the repository. For a
+Go target launched through a build adapter, declare the module file and use the
+selected `go` on `PATH`; generated-corpus discovery queries `go env GOCACHE` in
+that module directory, not the adapter executable.
 
 ## Deterministic checks before mutation
 
