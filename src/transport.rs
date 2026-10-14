@@ -59,7 +59,11 @@ impl Listeners {
     pub async fn bind(http_bind: SocketAddr, https: Option<&HttpsConfig>) -> io::Result<Self> {
         let https = match https {
             Some(config) => {
-                let tls = RustlsConfig::from_pem_file(&config.cert_file, &config.key_file).await?;
+                let certificates = tokio::fs::read(&config.cert_file).await?;
+                crate::tls_policy::strong_pem_chain(&certificates)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                let private_key = tokio::fs::read(&config.key_file).await?;
+                let tls = RustlsConfig::from_pem(certificates, private_key).await?;
                 let socket = std::net::TcpListener::bind(config.bind)?;
                 socket.set_nonblocking(true)?;
                 Some((socket, tls))
@@ -156,6 +160,22 @@ mod tests {
                     .with_no_client_auth(),
             ))
         }
+    }
+
+    #[tokio::test]
+    async fn weak_https_certificate_fails_before_binding_any_listener() {
+        let files = CertificateFiles::new();
+        std::fs::write(
+            &files.config.cert_file,
+            include_bytes!("../tests/fixtures/rsa-2047-leaf.pem"),
+        )
+        .unwrap();
+        let error = Listeners::bind("127.0.0.1:0".parse().unwrap(), Some(&files.config))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("TLS certificate requires"));
     }
 
     async fn response(mut stream: impl AsyncRead + AsyncWrite + Unpin, request: &str) -> String {

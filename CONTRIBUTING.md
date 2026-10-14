@@ -32,3 +32,7 @@ Automated tests use mocks or controlled fixtures where available. A passing unit
 - [docs/transport-security.md](docs/transport-security.md)
 
 See [README.md](README.md) for acquisition, configuration and usage, and [the evidence index](docs/openssf-evidence.md) for the public development-process references.
+
+## Project responsibilities and roadmap
+
+Follow [community conduct](CODE_OF_CONDUCT.md). [Governance](GOVERNANCE.md) identifies decision and release responsibility, including the current continuity limitation. [Architecture and quality roadmap](docs/project-assurance.md) records security assumptions and remaining evidence gaps.

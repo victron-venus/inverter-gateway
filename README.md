@@ -1,5 +1,6 @@
 # inverter-gateway
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15471/badge)](https://www.bestpractices.dev/en/projects/15471)
 [![Fuzzing: RC only](https://img.shields.io/badge/Fuzzing-RC%20only-blue)](FUZZING.md)
 
 Public release candidates run bounded, isolated fuzz campaigns for energy-source
@@ -327,3 +328,7 @@ installation, compatibility and release requirements.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for reports, development checks and pull requests,
 [SECURITY.md](SECURITY.md) for private vulnerability reporting and deployment trust boundaries,
 and the [OpenSSF evidence index](docs/openssf-evidence.md) for assessment references and remaining verification.
+
+### TLS certificate strength
+
+MQTT TLS and native HTTPS require RSA certificates of at least 2048 actual bits, P-256/P-384/P-521, or Ed25519, in addition to normal rustls validation. Replace weaker certificates before updating. Explicit weak MQTT roots or HTTPS chains stop startup; weak system roots are not trusted. See [the TLS boundary and tests](docs/project-assurance.md#exact-tls-key-strength-boundary).

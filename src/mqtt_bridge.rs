@@ -373,7 +373,12 @@ fn mqtt_transport(tls: bool, ca_file: Option<&Path>) -> Result<Transport, Config
     } else {
         let certs = rustls_native_certs::load_native_certs();
         let mut roots = RootCertStore::empty();
-        roots.add_parsable_certificates(certs.certs);
+        roots.add_parsable_certificates(
+            certs
+                .certs
+                .into_iter()
+                .filter(|cert| crate::tls_policy::strong_certificate(cert).is_ok()),
+        );
         if roots.is_empty() {
             return Err(
                 "no system CA certificates available for MQTT TLS; set MQTT_CA_FILE".into(),
@@ -388,6 +393,8 @@ fn mqtt_ca_roots(pem: &[u8]) -> Result<RootCertStore, ConfigError> {
     let mut roots = RootCertStore::empty();
     for cert in CertificateDer::pem_reader_iter(std::io::Cursor::new(pem)) {
         let cert = cert.map_err(|e| ConfigError::from(format!("invalid MQTT_CA_FILE PEM: {e}")))?;
+        crate::tls_policy::strong_certificate(&cert)
+            .map_err(|e| ConfigError::from(format!("invalid MQTT_CA_FILE key strength: {e}")))?;
         roots
             .add(cert)
             .map_err(|e| ConfigError::from(format!("invalid MQTT_CA_FILE certificate: {e}")))?;
@@ -399,9 +406,15 @@ fn mqtt_ca_roots(pem: &[u8]) -> Result<RootCertStore, ConfigError> {
 }
 
 fn verified_mqtt_tls(roots: RootCertStore) -> Transport {
-    // Rustls's standard verifier checks both the trust chain and MQTT_HOST.
+    // Keep normal trust/name/signature verification, then enforce exact key sizes.
+    let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
+        .build()
+        .expect("MQTT roots were validated and are nonempty");
     let config = ClientConfig::builder()
-        .with_root_certificates(roots)
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(crate::tls_policy::StrongServerVerifier(
+            verifier,
+        )))
         .with_no_client_auth();
     Transport::tls_with_config(config.into())
 }
@@ -603,6 +616,12 @@ mod tests {
             rustls::CertificateError::NotValidForName
                 | rustls::CertificateError::NotValidForNameContext { .. }
         ));
+    }
+
+    #[test]
+    fn mqtt_rejects_weak_root_before_connecting() {
+        assert!(mqtt_ca_roots(include_bytes!("../tests/fixtures/rsa-2047-cert.pem")).is_err());
+        assert!(mqtt_ca_roots(include_bytes!("../tests/fixtures/rsa-2048-cert.pem")).is_ok());
     }
 
     #[tokio::test]
