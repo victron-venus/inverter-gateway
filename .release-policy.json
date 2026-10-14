@@ -70,6 +70,6 @@
   "release_notes": "CHANGELOG.md",
   "toolkit_revision": "5e413f80a4353d328b4529eae57992ac3987e2dd",
   "fuzzing": {
-    "toolkit_ref": "03109d92fb43cc09f1a4f9030994077ee472d111"
+    "toolkit_ref": "5e4ab64896363c41f1c6403405af6a6164ab0f2e"
   }
 }

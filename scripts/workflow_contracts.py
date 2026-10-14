@@ -18,6 +18,7 @@ import yaml
 
 COMMIT_SHA_PATTERN = r"[0-9a-f]{40}"
 QUALITY_GATE = "quality-gate.yml"
+RELEASE_PIPELINE = "release-pipeline.yml"
 LOCAL_WORKFLOW_PREFIX = "./.github/workflows/"
 
 
@@ -186,7 +187,7 @@ def validate_generator_pins(directory, workflows):
     """Validate generated consumers and the toolkit's canonical pin manifest."""
     pins = generator_pins(directory)
     for filename, workflow in workflows.items():
-        if filename not in {QUALITY_GATE, "release-pipeline.yml", "release-quality-gate.yml"}:
+        if filename not in {QUALITY_GATE, RELEASE_PIPELINE, "release-quality-gate.yml"}:
             validate_workflow_pins(filename, workflow, None)
             continue
         source = (directory / ".github/workflows" / filename).read_text()
@@ -205,7 +206,7 @@ def validate_fuzz_pins(directory, workflows):
     if action not in configured:
         return
     reference = configured[action]
-    job = workflows.get("release-pipeline.yml", {}).get("jobs", {}).get("fuzz", {})
+    job = workflows.get(RELEASE_PIPELINE, {}).get("jobs", {}).get("fuzz", {})
     if job.get("uses") != action + "@" + reference or job.get("with", {}).get("toolkit-ref") != reference:
         raise ValueError("Fuzz workflow, runtime and policy toolkit_ref must match")
 
@@ -414,7 +415,7 @@ def validate_release_channels(policy, workflows):
     validate_beta_callers(jobs, beta)
     validate_release_scope(jobs["scope"])
     validate_release_gate(jobs["gate"])
-    caller = workflows.get("release-pipeline.yml", {}).get("jobs", {}).get("checks", {})
+    caller = workflows.get(RELEASE_PIPELINE, {}).get("jobs", {}).get("checks", {})
     if (
         caller.get("uses") != LOCAL_WORKFLOW_PREFIX + name
         or caller.get("needs") != "prepare"

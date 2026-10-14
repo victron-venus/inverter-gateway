@@ -19,6 +19,24 @@ import runpy
 import sys
 
 
+def verify_function(module, name, root, atheris):
+    """Prove a loaded function belongs to this checkout and already has hooks."""
+    function = module
+    for part in name.split("."):
+        function = getattr(function, part)
+    function = getattr(function, "__func__", function)
+    original = getattr(function, "__code__", None)
+    if original is None or not Path(original.co_filename).resolve().is_relative_to(root):
+        raise ValueError("Declared instrumentation must refer to project-local Python code")
+    source = Path(original.co_filename).resolve().relative_to(root)
+    if any(part in {".fuzz-venv", ".venv", "venv", "site-packages", ".fuzz-toolkit"} for part in source.parts):
+        raise ValueError("Dependency instrumentation cannot substitute for project-local code")
+    atheris.instrument_func(function)
+    if function.__code__ is not original:
+        raise ValueError(f"Missing production instrumentation: {name}")
+    return str(source)
+
+
 def verify_instrumentation(declarations, root, atheris):
     """Require already-instrumented Python functions from the source checkout."""
     if not declarations:
@@ -29,21 +47,8 @@ def verify_instrumentation(declarations, root, atheris):
         if module is None:
             raise ValueError("Declared production module was not loaded by the harness")
         for name in declaration["functions"]:
-            function = module
-            for part in name.split("."):
-                function = getattr(function, part)
-            function = getattr(function, "__func__", function)
-            original = getattr(function, "__code__", None)
-            if original is None or not Path(original.co_filename).resolve().is_relative_to(root):
-                raise ValueError("Declared instrumentation must refer to project-local Python code")
-            source = Path(original.co_filename).resolve().relative_to(root)
-            if any(part in {".fuzz-venv", ".venv", "venv", "site-packages", ".fuzz-toolkit"} for part in source.parts):
-                raise ValueError("Dependency instrumentation cannot substitute for project-local code")
-            atheris.instrument_func(function)
-            if function.__code__ is not original:
-                raise ValueError(f"Missing production instrumentation: {declaration['module']}.{name}")
-            verified.append({"module": declaration["module"], "function": name,
-                             "source": str(source)})
+            source = verify_function(module, name, root, atheris)
+            verified.append({"module": declaration["module"], "function": name, "source": source})
     return verified
 
 

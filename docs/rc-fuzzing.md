@@ -122,6 +122,11 @@ On Linux with the declared toolchain installed, run the same deterministic check
 python3 scripts/release_fuzz.py preflight --output /tmp/fuzz-preflight-new
 ```
 
+The targeted installer also exports the pinned workflow-contract dependencies.
+Native adapters with a custom CI graph run `scripts/workflow_contracts.py
+--actions-only` in an existing validator job; the full invocation additionally
+enforces the single-entry CI graph used by standard consumers.
+
 Use a new output directory. Add `--if-changed` only in hosted CI with its public
 repository event and complete Git history; it skips release dispatches because
 the RC runner already performs preflight itself. This command does not qualify a
@@ -156,7 +161,11 @@ qualification, including Go's "no fuzz tests to fuzz" result.
 
 ## Evidence, failures and stable promotion
 
-Every attempt saves `fuzz-diagnostics-<attempt>` for 30 days with setup logs,
+Failed ordinary-CI Python preflights retain setup/replay logs and instrumentation
+evidence as `fuzz-preflight-<attempt>` for seven days. Successful preflights add no
+artifact storage. The preflight cannot qualify an RC.
+
+Every RC attempt saves `fuzz-diagnostics-<attempt>` for 30 days with setup logs,
 target logs, preflight evidence, copied/mutated seed corpora and failure inputs.
 Go diagnostics also copy the generated `$GOCACHE/fuzz` subtree, separately from
 the build cache and source `testdata/fuzz` regressions. Each generated-corpus
