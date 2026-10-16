@@ -1,5 +1,9 @@
 # Release candidate fuzzing
 
+See the [illustrated RC fuzzing process and verified rollout results](https://github.com/victron-venus/venus-os-ci-toolkit/blob/main/docs/rc-fuzzing-results.md)
+for the shared release flow, evidence requirements and a dated cross-project
+snapshot. The project-specific scope and reproduction guidance below still apply.
+
 inverter-gateway runs bounded `cargo-fuzz`/libFuzzer campaigns through the reusable
 `victron-venus/venus-os-ci-toolkit` release pipeline. This is not enrollment in
 Google OSS-Fuzz and is not continuous fuzzing.
