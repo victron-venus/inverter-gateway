@@ -24,7 +24,8 @@ Cloudflare Access + a bearer token, instead of talking to Cerbo MQTT on the LAN.
 
 The gateway also provides **`GET /v1/energy`**: normalized battery charge, solar
 power, daily solar yield, explicitly monitored warnings/alarms, per-source freshness,
-and shared English voice reports.
+and shared voice reports in English or Russian. English remains the default;
+request `GET /v1/energy?locale=ru` for deterministic Russian speech text.
 Alexa can consume it directly through its server adapter; Google Home can use
 Home Assistant as an optional adapter. Energy data and wording are owned here,
 so Home Assistant is not required as the telemetry source. Computation stays on
@@ -306,6 +307,15 @@ cargo test
 ```
 
 CI runs the same three commands on every PR.
+
+After the container smoke test, CI retains its exact Docker image for three days
+as an `inverter-gateway-ci-<run>-<attempt>-<architecture>` artifact. The archive
+includes SHA-256 checksums and provenance (run, PR head, checked-out commit/tree,
+image ID, OS and architecture). For a manual canary, select a successful run for
+the reviewed head, verify both checksums and provenance before `docker load`,
+and compare the loaded image ID. PR checkouts may be merge commits: compare their
+tree to the intended source or review that merge. These artifacts do not deploy
+automatically and are not release images.
 
 ## License
 

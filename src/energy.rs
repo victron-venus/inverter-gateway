@@ -1,13 +1,30 @@
-//! Stable energy values and English reports for independent voice adapters.
+//! Stable energy values and localized reports for independent voice adapters.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::alarms::{alarm_label, Alarms};
 use crate::config::ConfigError;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EnergyLocale {
+    #[default]
+    En,
+    Ru,
+}
+
+impl EnergyLocale {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::En => "en",
+            Self::Ru => "ru",
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct EnergyConfig {
@@ -305,6 +322,7 @@ pub struct Reports {
 #[derive(Debug, Serialize)]
 pub struct EnergyResponse {
     pub schema_version: u8,
+    pub locale: EnergyLocale,
     pub generated_at: u64,
     pub mqtt_connected: bool,
     pub metrics: Metrics,
@@ -313,6 +331,14 @@ pub struct EnergyResponse {
 }
 
 impl EnergyResponse {
+    pub(crate) fn localized(mut self, locale: EnergyLocale) -> Self {
+        self.locale = locale;
+        if locale == EnergyLocale::Ru {
+            crate::energy_russian::localize(&mut self);
+        }
+        self
+    }
+
     pub(crate) fn build(
         cfg: &EnergyConfig,
         connected: bool,
@@ -446,6 +472,7 @@ impl EnergyResponse {
         };
         Self {
             schema_version: 1,
+            locale: EnergyLocale::En,
             generated_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -1068,7 +1095,13 @@ mod tests {
         response.generated_at = 1_700_000_000;
         let expected: Value =
             serde_json::from_str(include_str!("../tests/fixtures/energy-flow-v1.json")).unwrap();
-        assert_eq!(serde_json::to_value(response).unwrap(), expected);
+        assert_eq!(serde_json::to_value(&response).unwrap(), expected);
+        let expected_ru: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/energy-flow-ru-v1.json")).unwrap();
+        assert_eq!(
+            serde_json::to_value(response.localized(EnergyLocale::Ru)).unwrap(),
+            expected_ru
+        );
     }
 
     #[test]

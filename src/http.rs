@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{rejection::QueryRejection, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{sse, IntoResponse, Response, Sse},
     routing::get,
@@ -10,6 +10,7 @@ use tokio_stream::StreamExt;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::debug;
 
+use crate::energy::EnergyLocale;
 use crate::state::{AppState, Snapshot};
 use crate::whitelist;
 
@@ -132,15 +133,33 @@ async fn snapshot(
     state.snapshot().map(Json).ok_or(AppError::Unavailable)
 }
 
+#[derive(Default, serde::Deserialize)]
+struct EnergyQuery {
+    #[serde(default)]
+    locale: EnergyLocale,
+}
+
 async fn energy(
     State(state): State<SharedState>,
     headers: HeaderMap,
+    query: Result<Query<EnergyQuery>, QueryRejection>,
 ) -> Result<Response, AppError> {
     require_read_auth(&state, &headers)?;
+    // Do not echo arbitrary query values or expose validation before authentication.
+    let Query(query) = query
+        .map_err(|_| AppError::BadRequest("Use locale=en or locale=ru exactly once.".into()))?;
     // Consumers must evaluate fresh telemetry for each question, including outages.
     Ok((
-        [(axum::http::header::CACHE_CONTROL, "no-store")],
-        Json(state.shared.energy(&state.cfg.energy)),
+        [
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+            (axum::http::header::CONTENT_LANGUAGE, query.locale.as_str()),
+        ],
+        Json(
+            state
+                .shared
+                .energy(&state.cfg.energy)
+                .localized(query.locale),
+        ),
     )
         .into_response())
 }
@@ -1005,6 +1024,94 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(commands.try_recv().unwrap().topic, "W/test/vebus/0/Alarm");
+    }
+
+    #[tokio::test]
+    async fn energy_locale_is_explicit_validated_and_authenticated() {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+
+        let app = router(make_state(cfg_with_token("full-secret")));
+        for (query, locale) in [
+            ("", "en"),
+            ("?locale=en", "en"),
+            ("?locale=ru", "ru"),
+            ("?locale=ru&unused=value", "ru"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/v1/energy{query}"))
+                        .header("Authorization", "Bearer read-secret")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()["Cache-Control"], "no-store");
+            assert_eq!(response.headers()["Content-Language"], locale);
+            let body = axum::body::to_bytes(response.into_body(), 16384)
+                .await
+                .unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(value["locale"], locale);
+            assert_eq!(value["schema_version"], 1);
+            assert_eq!(
+                value["metrics"]["battery_soc"]["value"],
+                serde_json::Value::Null
+            );
+            assert_eq!(value["reports"]["status"]["status"], "unavailable");
+            assert!(value["reports"]["status"]["text"]
+                .as_str()
+                .unwrap()
+                .contains(if locale == "ru" {
+                    "нет связи"
+                } else {
+                    "disconnected"
+                }));
+        }
+        for query in [
+            "?locale=",
+            "?locale=RU",
+            "?locale=ru-RU",
+            "?locale=fr",
+            "?locale=ru&locale=en",
+            "?locale=ru&locale=ru",
+            "?locale=%3Cscript%3E",
+        ] {
+            for authenticated in [true, false] {
+                let mut request = Request::builder().uri(format!("/v1/energy{query}"));
+                if authenticated {
+                    request = request.header("Authorization", "Bearer read-secret");
+                }
+                let response = app
+                    .clone()
+                    .oneshot(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    if authenticated {
+                        StatusCode::BAD_REQUEST
+                    } else {
+                        StatusCode::UNAUTHORIZED
+                    }
+                );
+                let body = axum::body::to_bytes(response.into_body(), 4096)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    &body[..],
+                    if authenticated {
+                        &b"Use locale=en or locale=ru exactly once."[..]
+                    } else {
+                        &b"Invalid or missing bearer token"[..]
+                    }
+                );
+            }
+        }
     }
 
     #[tokio::test]

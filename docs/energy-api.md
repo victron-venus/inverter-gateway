@@ -12,6 +12,41 @@ gateway. Detailed questions should continue to use `text`.
 They must not compute their own totals or replace unavailable readings with zero.
 Home Assistant can consume this endpoint as an optional Google Home adapter.
 
+## Report language
+
+`GET /v1/energy` and `GET /v1/energy?locale=en` return English. Use
+`GET /v1/energy?locale=ru` for Russian. Only the exact values `en` and `ru` are
+supported; an empty, unsupported or repeated `locale` parameter returns HTTP 400
+after the normal bearer-token check. `Accept-Language` is not used. Other query
+parameters retain their previous behavior and do not select a language.
+
+Every successful response contains the additive `locale` field (`en` or `ru`)
+and matching `Content-Language` header. Schema version remains 1. Localized
+fields are `reports.*.text`, `reports.status.brief_text`, and
+`alarms.active[].label`. Metric values, units, sources, ages, status codes,
+severity codes, optional flow-field presence and freshness rules do not change.
+Old clients should continue ignoring unknown additive fields. A client requesting
+Russian should require `locale: "ru"` before speaking the text, so an older gateway
+which ignores the query cannot silently return English to a Russian voice.
+
+Russian wording is generated from the validated facts, without an LLM or a
+translation service. It includes Russian words for numbers, fractional values
+and grammatical unit forms. For example, a synthetic battery value of `77.5`
+is spoken as «Заряд аккумулятора: семьдесят семь целых пять десятых процента.»
+Do not run an English text/number normalizer over Russian reports. Use a
+Russian-capable TTS voice; this endpoint supplies text, not an audio stream or
+a new HA integration. A normal Assist intent should return this text to its
+originating conversation; invoking a fixed Google Cast wrapper would speak on
+that wrapper's configured display instead.
+
+The Russian report preserves charger-only daily coverage, signed net grid and
+battery power, stale/missing data warnings and incomplete alarm coverage. It
+does not infer a grid outage from zero grid power or estimate battery runtime.
+Alarm summaries remain bounded to five labels and retain the count of omitted
+active signals and any coverage warning. Source identifiers are never translated
+or interpolated into speech. The complete structured active-alarm list remains
+available separately.
+
 ## Authentication and transport
 
 Send `Authorization: Bearer <GATEWAY_READ_TOKEN>`. This optional token grants access
@@ -159,6 +194,7 @@ paths for equipment that does not exist; an absent path is not treated as zero.
 ```json
 {
   "schema_version": 1,
+  "locale": "en",
   "generated_at": 1789257600,
   "mqtt_connected": true,
   "metrics": {
@@ -209,8 +245,7 @@ measurement time. `mqtt_connected` represents the gateway's MQTT connection.
 Values retain their numeric precision; reports use one decimal for percent,
 whole watts below 1,000 W, two decimals for kilowatts and kWh, with trailing zeros
 removed. Extremely large values (at least one billion in the spoken unit) use
-spoken scientific notation to keep reports bounded. Reports are plain English
-text, not SSML. Exact wording may evolve within
+spoken scientific notation to keep reports bounded. Reports are plain text in the selected locale, not SSML. Exact wording may evolve within
 schema version 1; consumers should use the report keys and statuses.
 
 Every metric has all five fields, including explicit JSON `null`:
@@ -263,7 +298,7 @@ When any flow source is configured, all three optional metric keys
 `metrics.load_power`, `metrics.grid_power` and `metrics.battery_power` appear,
 each with the existing five metric fields and unit `W`. A component with an
 empty source list explicitly has status `unconfigured`, null value and age,
-and an empty source list. `reports.flow` contains their shared English report
+and an empty source list. `reports.flow` contains their shared localized report
 and combined status, using the same unavailable/stale/unconfigured precedence.
 Stale and unavailable signed metrics also have a null value: clients must not
 draw a current direction arrow from an old number.
@@ -305,7 +340,7 @@ not an installation snapshot.
 The additive `alarms` object contains `status`, `active`, `sources`, and
 `age_seconds`. Its status describes telemetry completeness/freshness, not alarm
 severity. Each active item contains a configured `source`, a `severity` of
-`warning` or `alarm`, and a fixed English `label`. Raw device messages and custom
+`warning` or `alarm`, and a fixed `label` in the selected locale. Raw device messages and custom
 names never become spoken alarm labels.
 
 The selected leaves must publish numeric `0` (inactive), `1` (warning), or `2`

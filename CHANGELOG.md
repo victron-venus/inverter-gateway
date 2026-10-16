@@ -24,6 +24,8 @@ parser entry points require the non-default fuzzing feature.
 
 ### Changes
 
+- Add explicit Russian energy reports with `GET /v1/energy?locale=ru`, including spoken numbers, units, source warnings, alarms and the brief overview. English remains the default; the additive `locale` response field identifies the selected language without changing numeric telemetry or schema version 1.
+
 - Enforce exact public-key strength for MQTT peers/trust roots and native HTTPS certificates, including rejection of 2047-bit RSA keys before application traffic.
 
 - Gate release candidates on bounded energy-source and controller-payload fuzz campaigns, retaining source-bound validation evidence.
@@ -37,6 +39,8 @@ parser entry points require the non-default fuzzing feature.
 Replace RSA certificates below 2048 bits or unsupported weak curves before updating. Native HTTPS and explicitly configured MQTT roots now fail closed on weak certificates; weak system roots are excluded. Existing strong certificates and credentials remain usable. This candidate still requires independent validation against the intended equipment before production use.
 
 ### Security
+
+Require rustls 0.23.46 in both locked dependency graphs to resolve inherited dependency advisories RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348 and RUSTSEC-2026-0349.
 
 Replace the unmaintained PEM parser and retain pinned CI dependencies. MQTT and HTTPS retain normal trust, hostname and signature verification with an additional key-strength floor; keep credentials outside published artifacts and maintain network isolation and independent equipment safeguards.
 

@@ -2,6 +2,7 @@
 pub mod alarms;
 pub mod config;
 pub mod energy;
+mod energy_russian;
 pub mod http;
 pub mod mqtt_bridge;
 pub mod state;

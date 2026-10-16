@@ -22,7 +22,9 @@ flowchart LR
 
 Source configuration selects the actual telemetry topology. Voice reads use the
 existing cache; they do not start a new MQTT scan or run computation on Cerbo.
-IGW defines units, aggregation, signs, freshness and central English wording.
+IGW defines units, aggregation, signs, freshness and central report wording.
+The energy API defaults to English; `locale=ru` selects deterministic Russian
+wording without changing the normalized measurements or status codes.
 Adapters own presentation, authorization to a household, transport and playback.
 
 ## Read scope and write scope
