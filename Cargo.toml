@@ -1,9 +1,13 @@
 [package]
 name = "inverter-gateway"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2021"
 description = "Victron inverter remote gateway — MQTT-to-HTTPS/SSE bridge"
 license = "MIT"
+
+[features]
+# Exposes only the pure policy checks to the separate, unpublished fuzz crate.
+fuzzing = []
 
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
