@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.4] - 2026-10-17
+
+### Changed
+
+- Clarify image publication and deployment configuration.
+- Link the maintained RC fuzzing process and results.
+
+### Upgrade
+
+Use the existing package update process and preserve configuration. GitHub release publication does not import or deploy an OCI image; those operations remain explicit.
+
+### Security
+
+This documentation maintenance release introduces no new runtime vulnerability fix or trust policy. Existing transport and integration validation remain required.
+
 ## [0.4.3] - Development line
 
 - Extend public RC fuzzing to certificate-strength parsing, DER boundaries and PEM chain limits; replay synthetic positive and negative certificate fixtures in ordinary CI.
