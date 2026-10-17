@@ -62,6 +62,12 @@
           "org.opencontainers.image.version"
         ],
         "value": "package"
+      },
+      {
+        "path": "inverter-gateway-container-smoke.json",
+        "format": "json",
+        "value": "package",
+        "field": "version"
       }
     ],
     "toolkit_revision": "5e413f80a4353d328b4529eae57992ac3987e2dd"
