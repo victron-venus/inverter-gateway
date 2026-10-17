@@ -224,8 +224,11 @@ cp .env.example .env   # gitignored secrets — fill real MQTT / portal / token
 IMAGE_TAG=0.2.4 ./deploy-from-release
 ```
 
-CI publishes **public** `linux/amd64` images to `ghcr.io/victron-venus/inverter-gateway`
-on `v*` tags (`.github/workflows/docker.yml`). No token needed to pull. Shared helpers
+The [release pipeline](.github/workflows/release-pipeline.yml) builds a
+`linux/amd64` OCI archive. Publishing the verified stable archive to
+`ghcr.io/victron-venus/inverter-gateway` is a separate explicit step; see
+[stable promotion](docs/release-workflow.md#stable-promotion). Confirm the chosen
+image tag exists before using `deploy-from-release`. Shared deployment helpers
 live in `deploy-common.sh`.
 
 ## Deploy on Synology (LAN) via Cloudflare Tunnel
@@ -249,10 +252,10 @@ port-publishing works. Set `HTTP_BIND=0.0.0.0:8080` in the compose service
 environment (override), while the host-side port mapping stays loopback-only:
 `127.0.0.1:9150:8080`. Never bind `0.0.0.0` on the host.
 
-The repository contains no real hostname, tunnel id, or credential. The
-deployment configuration lives in
-`~/victron/terraform-github-victron/local.secrets.tfvars` (out of scope for
-this repo).
+Keep deployment hostnames, tunnel IDs and credentials in your private deployment
+configuration. The [Cloudflare Access module](https://github.com/victron-venus/terraform-cloudflare-inverter-gateway)
+provides configuration and import examples; the gateway reads its runtime settings
+from the local, gitignored `.env` file.
 
 ## Whitelisted commands (v1)
 
