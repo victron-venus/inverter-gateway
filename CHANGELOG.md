@@ -6,14 +6,15 @@
 
 - Clarify image publication and deployment configuration.
 - Link the maintained RC fuzzing process and results.
+- Require a native Linux amd64 smoke of the exact exported OCI image before release-asset staging. Bind the original archive, config, rootfs layers and successful `--version` process to the frozen source, version plan and workflow attempt; preserve failure diagnostics.
 
 ### Upgrade
 
-Use the existing package update process and preserve configuration. GitHub release publication does not import or deploy an OCI image; those operations remain explicit.
+Use the existing package update process and preserve configuration. Release publication does not install images on target systems or deploy services; CI imports only a temporary copy for artifact smoke. Deployment remains explicit.
 
 ### Security
 
-This documentation maintenance release introduces no new runtime vulnerability fix or trust policy. Existing transport and integration validation remain required.
+This release adds artifact acceptance and documentation maintenance without a runtime vulnerability fix or trust-policy change. Existing transport and integration validation remain required.
 
 ## [0.4.3] - Development line
 

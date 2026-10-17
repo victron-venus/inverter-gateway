@@ -49,3 +49,36 @@ and `org.opencontainers.image.revision` from the source commit. Publication veri
 the version label on every runnable platform image, following the bounded OCI
 index, manifest and config digest chain. Local container builds require an available
 Docker daemon; registry publication and live deployment are separate actions.
+
+## Exact OCI acceptance
+
+The project-owned `release-build.yml` adapter runs
+`scripts/smoke_release_container.py` after BuildKit exports the original OCI archive
+and before either container asset is staged. It requires native Linux amd64 on
+both the host and the local Docker daemon; an ARM runner or remote daemon cannot
+silently substitute emulation. The existing runner-selection variables remain
+available, and this amd64 job fails closed on incompatible labels.
+
+The helper validates the OCI digest graph, SBOM/provenance subjects, runtime
+configuration and executable before running its normal entrypoint with `--version`.
+A temporary Docker archive contains the same config bytes and uncompressed layer
+bytes; there is no second build or registry pull. Imported image ID and ordered
+rootfs diffIDs must match the original OCI. If that exact image already exists,
+it is verified and used without retagging or removing it. Otherwise only a unique
+owned temporary tag is loaded and removed, without force or prune. The container
+has no network, a read-only rootfs, dropped capabilities and bounded resources.
+
+Success requires the exact created container to exit with integer status 0,
+without OOM/runtime errors, expected output and verified owned-container cleanup.
+An exclusive intent is persisted before Docker mutations. An interrupted or
+unknown outcome fails acceptance; `container-smoke-diagnostics-<attempt>` retains
+its identity and cleanup result for investigation. Inspect the recorded unique
+name/tag and ownership before manual cleanup; never prune the runner globally.
+
+`inverter-gateway-container-smoke.json` is versioned and staged beside the unchanged
+OCI archive. Its source, plan, run/attempt, original OCI SHA-256, config digest,
+rootfs diffIDs, binary hash and process result must match candidate evidence.
+Stable promotes these same RC bytes. This checks the native loader, entrypoint
+and version path only; MQTT, TLS, equipment and deployment acceptance remain
+separate. The standalone native archive keeps its own pre-packaging binary check;
+its glibc binary is not expected to match the OCI's musl binary hash.
