@@ -1,4 +1,4 @@
-# Upstream: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc
+# Upstream: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e
 # Pin the actual container image as well as the action metadata.
 # Copyright 2021 Security Scorecard Authors
 #
@@ -17,7 +17,7 @@
 # Action syntax: https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions.
 
 name: "OSSF Scorecard action"
-description: "Run OSSF Scorecard checks and output results in SARIF format"
+description: "Run OSSF Scorecard checks and output results in SARIF, JSON, or in-toto format"
 author: "OSSF - github.com/ossf/scorecard"
 
 inputs:
@@ -26,7 +26,7 @@ inputs:
     required: true
 
   results_format:
-    description: "OUTPUT: format of the results [json, sarif]"
+    description: "OUTPUT: format of the results [json, sarif, intoto]"
     required: true
 
   repo_token:
@@ -60,4 +60,4 @@ branding:
 
 runs:
   using: "docker"
-  image: "docker://ghcr.io/ossf/scorecard-action:v2.4.4@sha256:ae5104dd3cc28466ebeb11144354be4cac4b7ff829654f9fab89021d71c46670"
+  image: "docker://ghcr.io/ossf/scorecard-action:v2.5.0@sha256:1e1481c65fc2407d3fd6ab18a23c741eb4d1c0d9359ebafc4b3ab13aa61d8627"
