@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.5] - 2026-10-18
+
+### Changed
+
+- Prepare the metadata automation maintenance release.
+
+### Upgrade
+
+Use the existing upgrade procedure and preserve configuration and data. No data migration is required.
+
+### Security
+
+This release preserves the existing security and release-validation policy. Publication does not deploy the service or establish physical-device acceptance.
+
 ## [0.4.4] - 2026-10-17
 
 ### Changed
