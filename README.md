@@ -117,6 +117,11 @@ MQTT reconnects and telemetry processing continue when outbound requests back up
 queued commands retain their topic, payload, and QoS. Gateway shutdown also remains
 responsive during broker outages. Commands still pending at shutdown are not persisted.
 
+Before opening listeners or starting MQTT, the gateway registers SIGINT and
+SIGTERM handlers on Unix, or a Ctrl-C handler on Windows. If registration fails,
+startup returns an error. Only a received signal is logged as a shutdown request;
+an unexpected signal-stream failure is returned as an error after cleanup.
+
 ## Endpoints
 
 | Method | Path | Auth | Purpose |
