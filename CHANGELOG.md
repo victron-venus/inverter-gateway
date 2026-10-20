@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.6] - 2026-10-20
+
+### Changed
+
+- Update the locked Tokio runtime to 1.53.3 and native certificate loader to 0.8.5.
+
+### Upgrade
+
+Use the existing update procedure, preserve local configuration and retain the previous immutable package for rollback. No configuration migration is required.
+
+### Security
+
+Required dependency, source and release checks remain enabled. This maintenance beta does not claim a new application vulnerability fix or device acceptance.
+
 ## [0.4.5] - 2026-10-18
 
 ### Changed
