@@ -7,6 +7,14 @@
 - Update the native synchronization dependency parking_lot to the 0.13 series in the application and fuzz dependency graphs.
 - Preserve the gateway API and require the existing formatting, lint, test and fuzz gates.
 
+### Upgrade
+
+Use the existing native package or container update procedure, preserving gateway configuration and credentials. Retain the previous immutable package for rollback. No API or configuration migration is required.
+
+### Security
+
+Keep the existing certificate, hostname, key-strength and authorization checks. Updating the synchronization dependency does not change the transport trust policy or establish live MQTT/device acceptance; retain the required security and release-candidate checks.
+
 ## [0.4.6] - 2026-10-20
 
 ### Fixed
