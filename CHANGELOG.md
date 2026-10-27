@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.7] - 2026-10-27
+
+### Changed
+
+- Update the native synchronization dependency parking_lot to the 0.13 series in the application and fuzz dependency graphs.
+- Preserve the gateway API and require the existing formatting, lint, test and fuzz gates.
+
 ## [0.4.6] - 2026-10-20
 
 ### Fixed
