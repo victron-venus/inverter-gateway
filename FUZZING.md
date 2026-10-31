@@ -117,3 +117,44 @@ Do not suppress the assertion or delete a failing seed just to release. Add a
 focused ordinary regression test for a fixed bug and a minimized synthetic seed
 when safe. Report sensitive findings under [SECURITY.md](SECURITY.md) before
 publishing a reproducer.
+
+## Release workflow retries
+
+Fresh release inputs are selected by the exact GitHub workflow run ID and run
+attempt.
+
+Before publication starts, use **Re-run all jobs** only if the allocator and
+release policy permit reuse of that run's reservation. Recreate every required
+input in the same attempt; failed-only or individual retries can leave inputs
+missing, and older artifacts must not fill those gaps.
+
+For a fresh candidate or final build, once publication has started
+(`begin_publication`), or its external publication result is partial or uncertain,
+inspect the existing release, tags and assets before retrying. A consumed build
+number requires a new workflow run and reservation authorized by the release
+policy; an existing immutable tag may also require a new base version. Never
+reset the release ledger, overwrite assets or retag to force a retry. Historical
+byte promotion of an accepted RC keeps its reserved number and follows the
+existing promotion policy.
+
+Artifacts from older attempts may remain available for diagnostics; they are not
+inputs to the new attempt and do not need to be deleted. Filtering artifact names
+alone does not prove package completeness or receipt identity. Complete package
+inventory and receipt identity checks remain separate release requirements.
+
+See the shared [package identity and retry contract](https://github.com/victron-venus/venus-os-ci-toolkit/blob/main/docs/VERSIONING.md#package-identity-across-reruns).
+
+### Package receipt identity
+
+Fresh publication verifies each staged package receipt against the independently
+supplied repository, source commit, workflow run and attempt. Receipts created
+before this migration, or offline without an Actions identity, cannot qualify a
+fresh publication. Run all required producers in one complete workflow attempt
+after migration; an earlier attempt cannot fill missing inputs.
+
+Historical promotion and retained-evidence validation keep their existing checks.
+Receipt coverage validates the staged files; the expected packages and platforms
+still require a separate completeness check. Existing release approval and device
+acceptance policies continue to apply.
+
+See the shared [receipt migration guide](https://github.com/victron-venus/venus-os-ci-toolkit/blob/main/docs/release-workflow.md#migrate-package-receipt-identity-without-replacing-the-release-engine).

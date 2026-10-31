@@ -717,6 +717,29 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
         self.gh.save_completed_evidence(raw)
         return result, plan, json.loads(raw)
 
+    def test_partial_rerun_rejects_prior_attempt_package_before_publication(self):
+        lifecycle.prepare(self.args)
+        self.build_current()
+        self.gh.runs[99]["run_attempt"] = 2
+        os.environ["GITHUB_RUN_ATTEMPT"] = "2"
+        ledger = copy.deepcopy(self.gh.ledger)
+        with self.assertRaisesRegex(ValueError, "different package producer attempt"):
+            lifecycle.publish_versioned(self.args)
+        self.assertEqual(self.gh.writes, [])
+        self.assertEqual(self.gh.ledger, ledger)
+        self.assertFalse(rc.EVIDENCE.exists())
+
+
+    def test_complete_current_attempt_packages_publish_normally(self):
+        self.gh.runs[99]["run_attempt"] = 2
+        os.environ["GITHUB_RUN_ATTEMPT"] = "2"
+        lifecycle.prepare(self.args)
+        self.build_current()
+        result = lifecycle.publish_versioned(self.args)
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(json.loads(rc.EVIDENCE.read_bytes())["run_attempt"], 2)
+
+
     def declare_json_artifact(self):
         self.policy["versioning"]["artifacts"] = [
             {

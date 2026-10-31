@@ -115,6 +115,44 @@ class CurrentBuildInputsTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
 
+    def test_actions_receipt_records_complete_producer_identity(self):
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true",
+                        "GITHUB_REPOSITORY": "example/project", "GITHUB_RUN_ID": "123",
+                        "GITHUB_RUN_ATTEMPT": "2"}):
+            result = self.create()
+        expected = version_receipt.producer_identity("example/project", 123, 2, "a" * 40)
+        self.assertEqual(result["producer"], expected)
+        version_receipt.verify_receipt_evidence(result, self.plan, self.output.name,
+                                                self.policy, expected)
+        for changed in ({"run_id": 124}, {"run_attempt": 1},
+                        {"repository": "other/project"}, {"source_sha": "b" * 40}):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "producer attempt"):
+                version_receipt.verify_receipt_evidence(
+                    {**result, "producer": {**expected, **changed}},
+                    self.plan, self.output.name, self.policy, expected)
+
+
+    def test_expected_producer_rejects_missing_or_ambiguous_identity(self):
+        result = self.create()
+        expected = version_receipt.producer_identity("example/project", 123, 2, "a" * 40)
+        for bad in (None, {}, {**expected, "unexpected": 1}, {**expected, "run_attempt": True}):
+            with self.subTest(producer=bad), self.assertRaisesRegex(ValueError, "producer identity"):
+                version_receipt.verify_receipt_evidence(
+                    {**result, "producer": bad}, self.plan, self.output.name,
+                    self.policy, expected)
+
+
+    def test_actions_receipt_rejects_missing_or_invalid_environment(self):
+        for changed in ({"GITHUB_RUN_ID": ""}, {"GITHUB_RUN_ATTEMPT": "0"},
+                        {"GITHUB_RUN_ATTEMPT": "01"}, {"GITHUB_REPOSITORY": ""}):
+            env = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "example/project",
+                   "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", **changed}
+            with self.subTest(changed=changed), patch.dict(os.environ, env):
+                with self.assertRaisesRegex(ValueError, "producer identity"):
+                    self.create()
+            self.assertFalse(self.output.exists())
+
+
     def test_publisher_rejects_mutated_receipt_identity_and_coverage(self):
         original = self.create()
         artifact = original["artifacts"][0]
