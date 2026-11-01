@@ -70,7 +70,11 @@
         "field": "version"
       }
     ],
-    "toolkit_revision": "5e413f80a4353d328b4529eae57992ac3987e2dd"
+    "toolkit_revision": "5e413f80a4353d328b4529eae57992ac3987e2dd",
+    "required_build_receipts": [
+      "release-inputs-container.json",
+      "release-inputs-server.json"
+    ]
   },
   "single_entry_ci": true,
   "release_notes": "CHANGELOG.md",

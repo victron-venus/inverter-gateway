@@ -308,6 +308,24 @@ def verify_receipts(
     return results
 
 
+def verify_required_build_receipts(
+    receipts: list[dict[str, object]], policy: dict[str, object],
+) -> None:
+    """Require the source-declared package/signature set after RC evidence is split."""
+    required = version_plan.required_build_receipts(cast(dict[str, object], policy["versioning"]))
+    if required is None:
+        return
+    names = [cast(str, item["name"]) for item in receipts]
+    if len(set(names)) != len(names):
+        raise ValueError("Duplicate authenticated build receipts")
+    if set(names) != set(required):
+        raise ValueError(
+            "Build receipt inventory differs from source policy: "
+            f"missing={sorted(set(required) - set(names))}, "
+            f"unexpected={sorted(set(names) - set(required))}"
+        )
+
+
 def validate_input_fields(
     files: list[dict[str, object]], policy: dict[str, object], plan: dict[str, object]
 ) -> None:

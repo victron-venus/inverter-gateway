@@ -325,6 +325,51 @@ class CurrentBuildInputsTests(unittest.TestCase):
             self.create()
         self.assertTrue(self.output.is_file())
 
+    def test_presigning_checks_do_not_require_the_future_signature_receipt(self):
+        self.policy["versioning"]["required_build_receipts"] = [
+            "release-inputs-linux.json", "release-inputs-signature.json",
+        ]
+        self.create()
+        payloads = [{"name": p.name, "size": p.stat().st_size,
+                     "sha256": version_receipt.sha256(p.read_bytes())}
+                    for p in self.assets.iterdir()]
+        authenticated = version_receipt.verify_receipts(
+            self.assets, self.plan, payloads, self.policy)
+        self.assertEqual(len(authenticated), 1)
+        with self.assertRaisesRegex(ValueError, "missing=.*release-inputs-signature"):
+            version_receipt.verify_required_build_receipts(authenticated, self.policy)
+
+
+
+
+class RequiredBuildReceiptsTests(unittest.TestCase):
+    def test_legacy_policy_keeps_its_existing_contract(self):
+        version_receipt.verify_required_build_receipts([], {"versioning": {}})
+
+    def test_exact_unordered_package_and_signature_set_is_required(self):
+        policy = {"versioning": {"required_build_receipts": [
+            "release-inputs-linux.json", "release-inputs-signature.json",
+        ]}}
+        receipts = [{"name": "release-inputs-signature.json"},
+                    {"name": "release-inputs-linux.json"}]
+        version_receipt.verify_required_build_receipts(receipts, policy)
+        for invalid in (receipts[:1], receipts + [{"name": "release-inputs-extra.json"}]):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "inventory differs"):
+                version_receipt.verify_required_build_receipts(invalid, policy)
+        with self.assertRaisesRegex(ValueError, "Duplicate authenticated"):
+            version_receipt.verify_required_build_receipts(receipts + receipts[:1], policy)
+
+    def test_malformed_or_ambiguous_policy_names_are_rejected(self):
+        invalid = (None, True, 1, "release-inputs-linux.json", {}, [],
+                   [None], [True], [123], ["release-inputs-linux.json"] * 2,
+                   ["../release-inputs-linux.json"], ["/release-inputs-linux.json"],
+                   ["release-inputs-sub/linux.json"], ["release-inputs-sub\\linux.json"],
+                   ["release-inputs-linüx.json"], ["release-inputs-linux.json\n"],
+                   ["release-inputs-linux.JSON"], ["release-inputs-fuzz.json"])
+        for names in invalid:
+            with self.subTest(names=names), self.assertRaises(ValueError):
+                version_receipt.verify_required_build_receipts(
+                    [], {"versioning": {"required_build_receipts": names}})
 
 if __name__ == "__main__":
     unittest.main()

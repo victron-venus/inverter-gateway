@@ -31,7 +31,7 @@ if __package__:
         reserve_plan,
         verify_reservation,
     )
-    from .version_receipt import producer_identity, verify_declared_artifacts, verify_receipts
+    from .version_receipt import producer_identity, verify_declared_artifacts, verify_receipts, verify_required_build_receipts
 else:
     import release as client
     import release_control as rc
@@ -43,7 +43,7 @@ else:
         reserve_plan,
         verify_reservation,
     )
-    from version_receipt import producer_identity, verify_declared_artifacts, verify_receipts
+    from version_receipt import producer_identity, verify_declared_artifacts, verify_receipts, verify_required_build_receipts
 
 PLAN = Path(".release-plan.json")
 MAX_TOOLCHAIN_DIAGNOSTICS = 100
@@ -674,6 +674,7 @@ def publish_versioned(args: argparse.Namespace) -> dict[str, object]:
             cast(str, run["head_sha"]),
         ))
         receipts, validation_receipts = candidate_fuzz_receipts(policy, channel, receipts)
+        verify_required_build_receipts(receipts, policy)
         rc.verify_required_signatures(stage, gh.repo, cast(str, plan["source_sha"]))
         if parent:
             verify_final_toolchains(gh, candidate, receipts)

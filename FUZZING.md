@@ -158,3 +158,20 @@ still require a separate completeness check. Existing release approval and devic
 acceptance policies continue to apply.
 
 See the shared [receipt migration guide](https://github.com/victron-venus/venus-os-ci-toolkit/blob/main/docs/release-workflow.md#migrate-package-receipt-identity-without-replacing-the-release-engine).
+
+### Complete package producer inventory
+
+`versioning.required_build_receipts` declares the exact package and signature
+receipt filenames required by this project's final publisher. Each authenticated
+receipt must match the repository, source commit, workflow run and attempt. A
+missing producer or an unexpected receipt stops fresh publication, even when the
+remaining packages are valid. RC fuzz evidence is checked separately; pre-signing
+checks do not require a signature receipt that has not been created yet.
+
+Before publication begins, rerun all required producers only when the allocator
+and release policy permit reusing that reservation. After publication begins or
+its outcome is uncertain, inspect existing tags, releases and assets before a
+policy-authorized new run; never reset the ledger or mix earlier-attempt packages.
+Historical RC promotion keeps its accepted source policy. Keep this explicit
+inventory aligned with producer changes; it does not replace package-format,
+signature or device acceptance checks.
