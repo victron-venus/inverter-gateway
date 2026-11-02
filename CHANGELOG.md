@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.8] - 2026-11-02
+
+### Changed
+
+- Update the locked arc-swap synchronization library to 1.9.3 and bitflags to 2.13.2 in the application and fuzz dependency graphs.
+- Align the fuzz JSON parser and native certificate loader with the application graph, and refresh the native C compiler helper.
+- Preserve the existing TLS, authorization, formatting, lint, test, and fuzz gates.
+
+### Upgrade
+
+Use the existing native package or container update procedure, preserving gateway configuration and credentials. No API or configuration migration is required. Offline qualification does not replace live MQTT or device acceptance.
+
 ## [0.4.7] - 2026-10-27
 
 ### Changed
