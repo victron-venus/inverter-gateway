@@ -12,6 +12,10 @@
 
 Use the existing native package or container update procedure, preserving gateway configuration and credentials. No API or configuration migration is required. Offline qualification does not replace live MQTT or device acceptance.
 
+### Security
+
+Keep the existing certificate, hostname, key-strength, and authorization checks enabled. These compatibility updates do not change the trust policy or assert a new vulnerability fix; both application and fuzz dependency audits remain mandatory.
+
 ## [0.4.7] - 2026-10-27
 
 ### Changed
