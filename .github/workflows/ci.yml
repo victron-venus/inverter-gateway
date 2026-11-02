@@ -106,5 +106,7 @@ jobs:
             cargo install cargo-audit --version '=0.22.1' --locked --root "$audit_root"
           fi
           echo "$audit_root/bin" >> "$GITHUB_PATH"
-      - name: Check the committed lock against current RustSec advisories
-        run: cargo audit --json
+      - name: Check application and fuzz locks against current RustSec advisories
+        run: |
+          cargo audit --deny unsound --json
+          cargo audit --file fuzz/Cargo.lock --deny unsound --json

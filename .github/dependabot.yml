@@ -1,9 +1,15 @@
 version: 2
 updates:
   - package-ecosystem: cargo
-    directory: /
+    directories:
+      - /
+      - /fuzz
     schedule:
       interval: daily
+    groups:
+      rust-dependencies:
+        patterns: ["*"]
+        group-by: dependency-name
 
   - package-ecosystem: docker
     directory: /
