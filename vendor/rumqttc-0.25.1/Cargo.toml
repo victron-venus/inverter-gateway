@@ -163,7 +163,7 @@ version = "1.5"
 version = "0.5.7"
 
 [dependencies.flume]
-version = "0.11"
+version = "0.12"
 features = ["async"]
 default-features = false
 
