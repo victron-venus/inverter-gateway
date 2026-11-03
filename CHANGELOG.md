@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.9] - 2026-11-03
+
+### Fixed
+
+- Keep the application and fuzz dependency graphs compatible when updating the vendored MQTT client's flume channel dependency.
+
+### Changed
+
+- Update cfg-if to 1.0.5, deranged to 0.5.9, either to 1.19.0, equivalent to 1.0.3 and flume to 0.12.0.
+- Synchronize both vendored Cargo manifests and retain the existing async-only channel features.
+
+### Upgrade
+
+Use the existing native package or container update procedure, preserving gateway configuration and credentials. No API or configuration migration is required. Offline qualification does not replace live MQTT or device acceptance.
+
+### Security
+
+Keep certificate, hostname, key-strength and authorization checks enabled. These dependency updates preserve the existing trust policy; both locked dependency audits and the complete release checks remain required.
+
 ## [0.4.8] - 2026-11-02
 
 ### Changed
