@@ -19,8 +19,12 @@ unmaintained `rustls-pemfile` wrapper (RUSTSEC-2025-0134). Certificate chains ar
 fully parsed; client keys retain first-key selection for SEC1, PKCS#1 and PKCS#8.
 Malformed certificate chains and sections before the first key still fail;
 trailing key sections remain unread. Parser errors retain the public I/O error
-variant with `InvalidData`; their detail text comes from the maintained parser. All other
-retained runtime Rust source is unchanged.
+variant with `InvalidData`; their detail text comes from the maintained parser. Both Cargo manifests also select flume 0.12 with its existing async-only,
+default-features-disabled configuration. The application and fuzz lock files
+resolve the same version; this avoids a fuzz-only update leaving the application
+lock incompatible. Flume 0.12 fixes overflowing maximum-duration timeouts; its
+removed optional nanorand feature is not enabled here. All other retained runtime
+Rust source is unchanged.
 The 0.102.x dependency is vulnerable to RUSTSEC-2026-0049, RUSTSEC-2026-0098,
 RUSTSEC-2026-0099 and RUSTSEC-2026-0104; the current upstream release still
 requires it. See upstream issue https://github.com/bytebeamio/rumqtt/issues/1067
