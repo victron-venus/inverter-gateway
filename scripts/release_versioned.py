@@ -559,6 +559,11 @@ def prepare(args: argparse.Namespace) -> dict[str, object]:
         return closed
     if channel in {"beta", "rc", "stable"}:
         rc.ensure_absent(gh, f"v{base}")
+    if policy.get("release_notes") is not None:
+        # Every channel selects the base-version section; do not allocate a
+        # sequence or build number merely to discover unpublishable notes.
+        # The publisher independently validates the same source again.
+        rc.release_notes(gh, f"v{base}", cast(str, run["head_sha"]), "")
     plan = reserve_plan(
         gh,
         policy,

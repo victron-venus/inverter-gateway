@@ -1075,6 +1075,161 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
             lifecycle.prepare(self.args)
         self.assertEqual(self.gh.ledger_writes, [])
 
+    def configure_source_notes(self, text):
+        """Serve real source-bound changelog bytes through the publication parser."""
+        self.policy["release_notes"] = "CHANGELOG.md"
+        self.gh.source_policies[SHA] = self.policy
+        Path(rc.POLICY).write_bytes(rc.json_bytes(self.policy))
+        raw = text.encode()
+        response = {
+            "type": "file", "path": "CHANGELOG.md", "encoding": "base64",
+            "content": base64.b64encode(raw).decode(), "size": len(raw),
+            "sha": rc.hashlib.sha1(
+                b"blob " + str(len(raw)).encode() + b"\0" + raw,
+                usedforsecurity=False,
+            ).hexdigest(),
+        }
+        original = self.gh.api
+
+        def with_notes(path, method="GET", body=None):
+            if path == f"contents/CHANGELOG.md?ref={SHA}":
+                self.assertEqual((method, body), ("GET", None))
+                return response
+            return original(path, method, body)
+
+        self.enterContext(patch.object(self.gh, "api", side_effect=with_notes))
+        return response
+
+    def test_prepare_rejects_invalid_source_notes_before_any_reservation(self):
+        for channel, event in (
+            ("nightly", "schedule"), ("beta", "push"),
+            ("nightly", "workflow_dispatch"), ("beta", "workflow_dispatch"),
+            ("rc", "workflow_dispatch"),
+        ):
+            with self.subTest(channel=channel, event=event):
+                self.start_run(channel, 99)
+                self.gh.runs[99]["event"] = event
+                os.environ["GITHUB_EVENT_NAME"] = event
+                self.configure_source_notes("## [1.2.3]\n### Security\nKeep TLS enabled.\n")
+                with self.assertRaisesRegex(rc.ReleaseError, "Upgrade guidance"):
+                    lifecycle.prepare(self.args)
+                self.assertFalse(self.gh.branch)
+                self.assertIsNone(self.gh.ledger)
+                self.assertEqual(self.gh.ledger_writes, [])
+                self.assertEqual(self.gh.writes, [])
+                self.assertFalse(lifecycle.PLAN.exists())
+
+    def test_prepare_valid_notes_preserve_existing_plan_on_retry(self):
+        self.configure_source_notes(
+            "## [1.2.3]\n### Upgrade\nRetain the previous package for rollback.\n"
+            "### Security\nKeep TLS verification enabled.\n"
+        )
+        first = lifecycle.prepare(self.args)
+        plan = lifecycle.PLAN.read_bytes()
+        ledger = copy.deepcopy(self.gh.ledger)
+        os.environ["GITHUB_RUN_ATTEMPT"] = "2"
+        self.gh.runs[99]["run_attempt"] = 2
+        second = lifecycle.prepare(self.args)
+        self.assertEqual(first["build"], "true")
+        self.assertEqual(second["build"], "true")
+        self.assertEqual(lifecycle.PLAN.read_bytes(), plan)
+        self.assertEqual(self.gh.ledger, ledger)
+        self.assertEqual(len(self.gh.ledger_writes), 1)
+        self.assertEqual(self.gh.writes, [])
+
+    def test_prepare_notes_failure_preserves_existing_reservation_and_plan(self):
+        lifecycle.prepare(self.args)
+        previous = lifecycle.PLAN.read_bytes()
+        ledger = copy.deepcopy(self.gh.ledger)
+        writes = copy.deepcopy(self.gh.ledger_writes)
+        self.configure_source_notes("## [1.2.3]\nNo upgrade or security guidance.\n")
+        with self.assertRaisesRegex(rc.ReleaseError, "Upgrade guidance"):
+            lifecycle.prepare(self.args)
+        self.assertEqual(lifecycle.PLAN.read_bytes(), previous)
+        self.assertEqual(self.gh.ledger, ledger)
+        self.assertEqual(self.gh.ledger_writes, writes)
+        self.assertEqual(self.gh.writes, [])
+
+    def test_closed_push_still_skips_invalid_notes_without_a_new_build(self):
+        self.configure_source_notes("## [1.2.3]\nNo new release is requested.\n")
+        self.gh.refs["v1.2.3"] = {
+            "ref": "refs/tags/v1.2.3", "object": {"type": "commit", "sha": SHA},
+        }
+        self.gh.runs[99]["event"] = "push"
+        os.environ["GITHUB_EVENT_NAME"] = "push"
+        result = lifecycle.prepare(self.args)
+        self.assertEqual(result["status"], "version-required")
+        self.assertEqual(result["build"], "false")
+        self.assertFalse(self.gh.branch)
+        self.assertFalse(lifecycle.PLAN.exists())
+
+    def test_final_build_rejects_notes_before_its_new_reservation(self):
+        self.configure_source_notes(
+            "## [1.2.3]\n### Upgrade\nRetain the previous package for rollback.\n"
+            "### Security\nKeep TLS verification enabled.\n"
+        )
+        candidate, _, _ = self.release_run("rc", 100)
+        self.start_run("stable", 101, candidate["tag"])
+        self.configure_source_notes("## [1.2.3]\nMissing required guidance.\n")
+        ledger = copy.deepcopy(self.gh.ledger)
+        writes = copy.deepcopy(self.gh.ledger_writes)
+        mutations = copy.deepcopy(self.gh.writes)
+        plan = lifecycle.PLAN.read_bytes()
+        with self.assertRaisesRegex(rc.ReleaseError, "Upgrade guidance"):
+            lifecycle.prepare(self.args)
+        self.assertEqual(self.gh.ledger, ledger)
+        self.assertEqual(self.gh.ledger_writes, writes)
+        self.assertEqual(self.gh.writes, mutations)
+        self.assertEqual(lifecycle.PLAN.read_bytes(), plan)
+
+    def test_byte_promotion_prepare_does_not_parse_current_checkout_notes(self):
+        self.policy = policy("promote-bytes")
+        self.gh.source_policies[SHA] = self.policy
+        Path(rc.POLICY).write_bytes(rc.json_bytes(self.policy))
+        candidate, _, _ = self.release_run("rc", 100)
+        self.start_run("stable", 101, candidate["tag"])
+        writes = copy.deepcopy(self.gh.ledger_writes)
+        with patch.object(rc, "release_notes", side_effect=AssertionError("unexpected notes read")):
+            result = lifecycle.prepare(self.args)
+        self.assertEqual(result["build"], "false")
+        self.assertEqual(self.gh.ledger_writes, writes)
+
+    def test_prepare_without_notes_policy_does_not_add_a_notes_read(self):
+        with patch.object(rc, "release_notes", side_effect=AssertionError("unexpected notes read")):
+            result = lifecycle.prepare(self.args)
+        self.assertEqual(result["build"], "true")
+        self.assertEqual(len(self.gh.ledger_writes), 1)
+
+    def test_prepare_validates_notes_after_manual_or_tag_derived_version_selection(self):
+        self.policy.pop("version_file")
+        for tag_derived in (False, True):
+            with self.subTest(tag_derived=tag_derived):
+                self.policy["version_from_tags"] = tag_derived
+                self.configure_source_notes("## [1.2.3]\nMissing required guidance.\n")
+                inputs = {"channel": "beta", "expected_sha": SHA}
+                if not tag_derived:
+                    inputs["version"] = "1.2.3"
+                Path(os.environ["GITHUB_EVENT_PATH"]).write_text(json.dumps({"inputs": inputs}))
+                with patch.object(lifecycle.client, "next_tag_version", return_value="1.2.3") as resolve:
+                    with self.assertRaisesRegex(rc.ReleaseError, "Upgrade guidance"):
+                        lifecycle.prepare(self.args)
+                self.assertEqual(resolve.call_count, int(tag_derived))
+                self.assertFalse(self.gh.branch)
+                self.assertEqual(self.gh.ledger_writes, [])
+                self.assertFalse(lifecycle.PLAN.exists())
+
+    def test_prepare_rejects_source_notes_with_wrong_git_identity(self):
+        response = self.configure_source_notes(
+            "## [1.2.3]\n### Upgrade\nRetain the previous package for rollback.\n"
+            "### Security\nKeep TLS verification enabled.\n"
+        )
+        response["sha"] = "0" * 40
+        with self.assertRaisesRegex(rc.ReleaseError, "Git blob identity mismatch"):
+            lifecycle.prepare(self.args)
+        self.assertFalse(self.gh.branch)
+        self.assertEqual(self.gh.ledger_writes, [])
+        self.assertFalse(lifecycle.PLAN.exists())
+
     def test_prepare_build_receipt_publish_keeps_exact_identity(self):
         result = lifecycle.prepare(self.args)
         self.assertEqual(result["build"], "true")
