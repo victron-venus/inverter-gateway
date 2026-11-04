@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.10] - 2026-11-04
+
+### Changed
+
+- Update fs-err to 3.3.2, h2 to 0.4.20, hyper to 1.12.0, hyper-util to 0.1.21, and lazy_static to 1.5.1 in both application and fuzz dependency graphs.
+- Retain the existing dependency features, gateway API and configuration format.
+
+### Upgrade
+
+Use the existing native package or container update procedure, preserving gateway configuration and credentials. No configuration or data migration is required. Live MQTT and device acceptance remain separate from the software release.
+
+### Security
+
+Keep certificate, hostname, key-strength and authorization checks enabled. These upstream updates include HTTP framing and stream-handling corrections; both locked dependency audits and the complete release checks remain required.
+
 ## [0.4.9] - 2026-11-03
 
 ### Fixed
