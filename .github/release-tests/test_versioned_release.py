@@ -1119,6 +1119,77 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
                 self.assertEqual(self.gh.writes, [])
                 self.assertFalse(lifecycle.PLAN.exists())
 
+    def check_notes_utf8_limit(self, channel, run_id=99, parent_tag=None):
+        self.start_run(channel, run_id, parent_tag)
+        description = (
+            f"Final build from accepted {parent_tag}; new verified package bytes."
+            if parent_tag
+            else f"{channel} candidate with a version fixed before compilation."
+        )
+        expected_provenance = (
+            description + f"\n\nSource: `{SHA}`\n\n"
+            f"Validation: https://github.com/{REPO}/actions/runs/{run_id}\n\n"
+            f"See `{rc.MANIFEST}` for package hashes and version input evidence."
+        )
+        template = (
+            "## [1.2.3]\n\n### Fixed\n\nX\n\n"
+            "### Upgrade\n\nNo migration is required.\n\n"
+            "### Security\n\nKeep TLS verification enabled.\n"
+        )
+        self.configure_source_notes(template)
+        initial = rc.release_notes(self.gh, "v1.2.3", SHA, expected_provenance)
+        remaining = 125_000 - len(initial.encode("utf-8"))
+        padding = "é" * (remaining // 2) + "x" * (remaining % 2)
+        exact = template.replace("\nX\n", "\nX" + padding + "\n")
+        self.configure_source_notes(exact.replace("\nX", "\nXx", 1))
+        ledger = copy.deepcopy(self.gh.ledger)
+        writes = copy.deepcopy(self.gh.ledger_writes)
+        mutations = copy.deepcopy(self.gh.writes)
+        plan = lifecycle.PLAN.read_bytes() if lifecycle.PLAN.exists() else None
+        with (
+            patch.object(lifecycle, "reserve_plan", side_effect=AssertionError("reserved oversized notes")) as reserve,
+            patch.object(Path, "write_bytes", side_effect=AssertionError("wrote oversized plan")) as write,
+            self.assertRaisesRegex(rc.ReleaseError, "Release notes are too large"),
+        ):
+            lifecycle.prepare(self.args)
+        reserve.assert_not_called()
+        write.assert_not_called()
+        self.assertEqual(self.gh.ledger, ledger)
+        self.assertEqual(self.gh.ledger_writes, writes)
+        self.assertEqual(self.gh.writes, mutations)
+        self.assertEqual(lifecycle.PLAN.read_bytes() if lifecycle.PLAN.exists() else None, plan)
+        self.configure_source_notes(exact)
+        expected_body = rc.release_notes(self.gh, "v1.2.3", SHA, expected_provenance)
+        self.assertEqual(len(expected_body.encode("utf-8")), 125_000)
+        self.assertLess(len(expected_body), 125_000)
+        with patch.object(lifecycle, "candidate_provenance", wraps=lifecycle.candidate_provenance) as provenance:
+            lifecycle.prepare(self.args)
+            self.build_current()
+            result = lifecycle.publish_versioned(self.args)
+        self.assertEqual(
+            [call.args for call in provenance.call_args_list],
+            [(REPO, channel, SHA, run_id, parent_tag)] * 2,
+        )
+        published = next(item for item in self.gh.releases.values() if item["tag_name"] == result["tag"])
+        self.assertEqual(published["body"], expected_body)
+
+    def test_beta_notes_utf8_limit_before_reservation(self):
+        self.check_notes_utf8_limit("beta")
+
+    def test_rc_notes_utf8_limit_before_reservation(self):
+        self.check_notes_utf8_limit("rc")
+
+    def test_nightly_notes_utf8_limit_before_reservation(self):
+        self.check_notes_utf8_limit("nightly")
+
+    def test_final_build_notes_utf8_limit_before_reservation(self):
+        self.configure_source_notes(
+            "## [1.2.3]\n### Upgrade\nNo migration is required.\n"
+            "### Security\nKeep TLS verification enabled.\n"
+        )
+        candidate, _, _ = self.release_run("rc", 100)
+        self.check_notes_utf8_limit("stable", 101, candidate["tag"])
+
     def test_prepare_valid_notes_preserve_existing_plan_on_retry(self):
         self.configure_source_notes(
             "## [1.2.3]\n### Upgrade\nRetain the previous package for rollback.\n"
