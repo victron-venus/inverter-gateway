@@ -1502,9 +1502,7 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
             self.assertEqual(self.gh.ledger_writes, writes)
             self.assertEqual(self.gh.writes, [])
 
-    def _reject_automatic_source_move_after_upload(self, scheduled, recover, rename=False):
-        plan = self.build_schedule() if scheduled else self.automatic_build()
-        upload = self.gh.upload
+    def _release_creation_fixture(self, recover):
         reader = Mock()
         reader.json.side_effect = lambda path: (
             copy.deepcopy(self.gh.releases[int(path.split('/')[1])])
@@ -1520,6 +1518,13 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
                 )
                 raise rc.AmbiguousCreate('response lost')
             return result
+
+        return reader, create
+
+    def _reject_automatic_source_move_after_upload(self, scheduled, recover, rename=False):
+        plan = self.build_schedule() if scheduled else self.automatic_build()
+        upload = self.gh.upload
+        reader, create = self._release_creation_fixture(recover)
 
         def move_source(*args, **kwargs):
             result = upload(*args, **kwargs)
@@ -2186,21 +2191,7 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
         lifecycle.prepare(self.args)
         plan = self.build_current()
         upload = self.gh.upload
-        reader = Mock()
-        reader.json.side_effect = lambda path: (
-            copy.deepcopy(self.gh.releases[int(path.split('/')[1])])
-            if path.startswith('releases/') else self.gh.api(path))
-        reader.pages.side_effect = self.gh.pages
-
-        def create(body):
-            result = self.gh.api('releases', 'POST', body)
-            if recover:
-                self.gh.releases[result['id']].update(
-                    published_at=None, author={'id': 41898282}, assets=[],
-                    url=f"https://api.github.com/repos/{REPO}/releases/{result['id']}",
-                )
-                raise rc.AmbiguousCreate('response lost')
-            return result
+        reader, create = self._release_creation_fixture(recover)
 
         def move_tag(*args, **kwargs):
             result = upload(*args, **kwargs)
