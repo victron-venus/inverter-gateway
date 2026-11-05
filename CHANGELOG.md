@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.11] - 2026-11-04
+
+### Changed
+
+- Update log to 0.4.35, mio to 1.2.4 and openssl-probe to 0.2.2 in both application and fuzz dependency graphs.
+- Update powerfmt to 0.2.1 in the application graph, matching the existing fuzz graph, and rustix to 1.1.6 for development-only temporary files.
+- Retain dependency features, gateway API and configuration format.
+
+### Upgrade
+
+Use the existing native package or container update procedure, preserving gateway configuration and credentials. No configuration or data migration is required. Live MQTT and device acceptance remain separate from the software release.
+
+### Security
+
+Keep certificate, hostname, key-strength and authorization checks enabled. Both locked dependency audits and the complete release checks remain required.
+
 ## [0.4.10] - 2026-11-04
 
 ### Changed
