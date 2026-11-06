@@ -14,10 +14,12 @@ The optional `change_scope` policy provides exact `documentation_paths`, exact
 `required_paths` for documentation used as a build input, and
 `always_validate_workflows` for independently required checks. Documentation paths
 cannot exempt source, tests, fixtures, build configuration or dependencies.
-Manual dispatch, scheduled runs and release qualification remain full. Only with
-explicit `change_scope` opt-in does a documentation-only push stop before release
-preparation, version allocation, artifact builds or publication. This does not
-change the configured nightly policy.
+Documentation-only PRs may skip expensive validation after explicit opt-in.
+Main-branch release pushes, manual dispatch and scheduled runs keep full
+preparation and qualification. A newer automatic run supersedes unfinished
+candidates, so it must remain eligible to replace them and run the required
+security checks. Release-note files parsed by contracts remain required inputs.
+The configured nightly policy is unchanged.
 
 ## Local checks
 
@@ -155,3 +157,19 @@ References: [GitHub schedules](https://docs.github.com/en/actions/reference/work
 Run `python3 scripts/release.py prepare-version --pr` from the clean default-branch HEAD. The command refreshes tags and opens a PR with synchronized owned version fields. An existing unreleased base is retained; use `--bump minor`, `--bump major`, or `--version X.Y.Z` for explicit intent. See [version plans](VERSIONING.md) for build overlays, the dedicated allocation ledger and recovery.
 
 A local candidate package also needs the saved `.release-plan.json` at its exact source commit. Restore the `version_plan` object from the published `release-manifest.json` into a disposable checkout before `release.py package`; do not invent a tag or native counter locally. Ordinary development builds can use the project's native build command and explicitly local version identity.
+
+### Updating change-scope policy safely
+
+Use the [fixed scope-only generator](https://github.com/victron-venus/venus-os-ci-toolkit/commit/56863cf0beed5ab97c4f27d7adb5aedb83c758d5)
+or a reviewed later revision for recognized generated graphs:
+
+```sh
+python3 /path/to/venus-os-ci-toolkit/scripts/install_release.py "$PWD" --change-scope-only
+python3 /path/to/venus-os-ci-toolkit/scripts/install_release.py "$PWD" --change-scope-only --check
+```
+
+The policy's historical `toolkit_revision` records provenance; it does not select
+a safe regeneration tool. Do not rerun an older full generator just to update
+change scope. Preserve custom workflow adapters through explicit review if the
+scoped generator rejects their graph. Keep release qualification full and run
+the local workflow-contract tests after every regeneration.
