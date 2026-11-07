@@ -81,5 +81,18 @@
   "toolkit_revision": "5e413f80a4353d328b4529eae57992ac3987e2dd",
   "fuzzing": {
     "toolkit_ref": "35ea6ef05730806bd85e27fdbbeed326ac5c3deb"
+  },
+  "change_scope": {
+    "documentation_paths": [
+      "FUZZING.md",
+      "GOVERNANCE.md",
+      "architecture.md"
+    ],
+    "required_paths": [
+      "CHANGELOG.md"
+    ],
+    "always_validate_workflows": [
+      "codeql.yml"
+    ]
   }
 }

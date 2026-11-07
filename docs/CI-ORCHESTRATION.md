@@ -10,9 +10,7 @@ triggers, timeouts, and complete gate dependencies. Dependency Review, where pre
 blocks the same gate for pull requests and reports other events as not applicable.
 CodeQL action updates are grouped where Dependabot Actions updates are configured.
 
-Auto-merge retains the check-waiting mode because the conditional Gitar review
-check does not appear on every PR. It waits for all observed checks, including Gitar,
-without making absent conditional checks a permanent merge blocker. BOT_PAT remains
+Auto-merge uses the checks configured in the repository workflow. BOT_PAT remains
 the merger token; approval token policies are unchanged. The gate and external
 security checks retain strict branch protection and verified source GitHub Apps.
 

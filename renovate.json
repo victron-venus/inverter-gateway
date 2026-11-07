@@ -1,6 +1,46 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "local>victron-venus/venus-os-ci-toolkit:renovate-ci"
-  ]
+    "local>victron-venus/venus-os-ci-toolkit:renovate-fleet"
+  ],
+  "enabledManagers": [
+    "cargo",
+    "custom.jsonata",
+    "custom.regex",
+    "docker-compose",
+    "dockerfile",
+    "github-actions",
+    "pip_requirements"
+  ],
+  "ignorePaths": [
+    "**/vendor/**",
+    "**/node_modules/**",
+    "**/fixtures/**",
+    "**/tools/browser-compatibility/**",
+    "security/provider/**",
+    "build-support/tls-armv7/**"
+  ],
+  "packageRules": [
+    {
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchFileNames": [
+        "/^[^/]+$/",
+        "/^fuzz/[^/]+$/"
+      ],
+      "matchPackageNames": [
+        "*"
+      ],
+      "groupName": "rust-dependencies",
+      "groupSlug": "rust-dependencies",
+      "separateMajorMinor": false,
+      "separateMinorPatch": false
+    }
+  ],
+  "pip_requirements": {
+    "managerFilePatterns": [
+      "/(^|/)requirements[^/]*\\.(txt|pip)$/"
+    ]
+  }
 }
