@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for inverter-gateway
 # Stage 1: build
-FROM rust:1.99-alpine@sha256:0cce0a5e0e8ba67b455257a3a02a1d99005f382748789d6464460028810f1627 AS builder
+FROM rust:1.100-alpine@sha256:de1e0058543a81ed7b046629167db587c67a94bdf37cce14eb27f0ec83baaffb AS builder
 RUN apk add --no-cache musl-dev
 WORKDIR /app
 
@@ -15,7 +15,7 @@ COPY . .
 RUN touch src/main.rs && cargo build --locked --release
 
 # Stage 2: minimal runtime
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 RUN apk add --no-cache ca-certificates tini && \
     adduser -D -g '' appuser
 COPY --from=builder /app/target/release/inverter-gateway /usr/local/bin/inverter-gateway
