@@ -338,7 +338,7 @@ MIT — see [LICENSE](LICENSE).
 - [amazon-echo-home-voice](https://github.com/4alvit/amazon-echo-home-voice) — Alexa adapter for the read-only energy reports.
 - [google-home-voice-stats](https://github.com/4alvit/google-home-voice-stats) — voice and display integration that consumes the energy API.
 
-Browse the [public project catalog](https://victron-venus.github.io/.github/projects.html)
+Browse the [public project catalog](https://victron-venus.github.io/#projects)
 for other Venus OS packages and companion tools. Each project documents its own
 installation, compatibility and release requirements.
 
