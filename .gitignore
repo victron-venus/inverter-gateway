@@ -18,3 +18,4 @@ release-assets/
 /fuzz/target/
 /fuzz/artifacts/
 /fuzz/coverage/
+A*S.md
