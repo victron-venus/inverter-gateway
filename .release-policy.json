@@ -80,7 +80,7 @@
   "release_notes": "CHANGELOG.md",
   "toolkit_revision": "5e413f80a4353d328b4529eae57992ac3987e2dd",
   "fuzzing": {
-    "toolkit_ref": "07fd589df9d5dca5e92cfc7f1f5e0ba14e469be3"
+    "toolkit_ref": "95eb33d1330d4ff43840501688c640dc2c3c12fa"
   },
   "change_scope": {
     "documentation_paths": [
