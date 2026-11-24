@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.4.12] - Unreleased
+
+### Changed
+
+- keep local instruction files out of git.
+- add a navigation index for docs/.
+- point the catalog link at the maintained site anchor.
+- preserve merge identity and withdrawn auto-merge requests (#144).
+- verify the current default branch before reviewed merges.
+- reevaluate reviewed dependency merges after CI (#141).
+- validate the toolkit before scope regeneration (#139).
+- limit documentation pull requests to relevant checks (#138).
+- migrate dependency updates to Renovate (#137).
+- remove obsolete review dependency (#136).
+
+### Upgrade
+
+Use the existing native package or container update procedure, preserving gateway configuration and credentials. No configuration or data migration is required. Live MQTT and device acceptance remain separate from the software release.
+
+### Security
+
+Keep certificate, hostname, key-strength and authorization checks enabled. Both locked dependency audits and the complete release checks remain required.
+
 ## [0.4.11] - 2026-11-04
 
 ### Changed
