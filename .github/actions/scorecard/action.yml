@@ -60,4 +60,4 @@ branding:
 
 runs:
   using: "docker"
-  image: "docker://ghcr.io/ossf/scorecard-action:v2.6.0@sha256:7a62770a1e88f3bcaed20cbf9a57206c6531eb77653e415ca3c3c6e8d140877b"
+  image: "docker://ghcr.io/ossf/scorecard-action:v2.6.0@sha256:7f092e5a4a363af001cca6cdb04f111e212173ba602336104394e7febc2c6e48"
